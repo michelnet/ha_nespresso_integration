@@ -1,5 +1,5 @@
 {
-    "name": "Nespresso",
-    "content_in_root": false,
-    "render_readme": true
+  "name": "Nespresso",
+  "content_in_root": false,
+  "homeassistant": "2026.8.0"
 }

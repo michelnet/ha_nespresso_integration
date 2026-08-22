@@ -1,48 +1,57 @@
 coffee:
-  description: Make a coffee
   fields:
+    device_id:
+      required: false
+      selector:
+        device:
+          integration: nespresso
     brew_temp:
       required: false
-      default: Medium
+      default: medium
       selector:
         select:
           options:
-            - Low
-            - Medium
-            - High
+            - low
+            - medium
+            - high
+          translation_key: brew_temperature
     brew_type:
       required: false
-      default: Lungo
+      default: lungo
       selector:
         select:
           options:
-            - Ristretto
-            - Espresso
-            - Lungo
-            - Americano
-            - label: Hot Water
-              value: HOT_WATER
+            - ristretto
+            - espresso
+            - lungo
+            - americano
+            - hot_water
+          translation_key: brew_type
     coffee_ml:
       required: false
-      default: 100
       selector:
         number:
           min: 15
           max: 130
+          step: 1
           unit_of_measurement: ml
           mode: slider
     water_ml:
       required: false
-      default: 100
       selector:
         number:
           min: 25
           max: 300
+          step: 1
           unit_of_measurement: ml
           mode: slider
 caps:
-  description: Manage caps counter
   fields:
+    device_id:
+      required: false
+      selector:
+        device:
+          integration: nespresso
     caps:
       required: true
       default: 100

@@ -1,0 +1,10 @@
+{
+  "services": {
+    "caps": {
+      "service": "mdi:counter"
+    },
+    "coffee": {
+      "service": "mdi:coffee"
+    }
+  }
+}

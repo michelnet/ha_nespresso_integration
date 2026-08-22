@@ -1,293 +1,168 @@
-"""
-Support for Nespresso Connected mmachine.
-https://www.nespresso.com
+"""Sensor entities for Nespresso Bluetooth machines."""
 
-For more details about this platform, please refer to the documentation at
-https://home-assistant.io/components/sensor.Nespresso/
-"""
+from __future__ import annotations
+
 import logging
-from datetime import timedelta, datetime
+from enum import Enum
+from typing import override
 
-import voluptuous as vol
-
-import homeassistant.helpers.config_validation as cv
-from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import ConfigEntryNotReady
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.components.sensor import PLATFORM_SCHEMA
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorEntityDescription,
+)
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
-from homeassistant.const import (ATTR_DEVICE_CLASS, ATTR_ICON, CONF_ADDRESS,
-                                 CONF_NAME, CONF_RESOURCE, CONF_SCAN_INTERVAL,
-                                 CONF_UNIT_SYSTEM,
-                                 EVENT_HOMEASSISTANT_STOP, STATE_UNKNOWN,
-                                 CONF_TOKEN)
-from homeassistant.components.binary_sensor import (PLATFORM_SCHEMA, BinarySensorEntity,
-                                                   BinarySensorDeviceClass)
-from homeassistant.helpers.entity import Entity, DeviceInfo
-from homeassistant.components.bluetooth import async_ble_device_from_address
+from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .nespresso import NespressoClient
-from .machines import Temprature, BrewType
-from bleak import BleakClient
-from bleak_retry_connector import establish_connection
+from .const import DOMAIN
+from .coordinator import NespressoConfigEntry, NespressoDataUpdateCoordinator, SensorValue
 
 _LOGGER = logging.getLogger(__name__)
 
-SCAN_INTERVAL = timedelta(seconds=60)
+MACHINE_STATE_OPTIONS = [
+    "reset",
+    "heat_up",
+    "ready",
+    "descaling_ready",
+    "brewing",
+    "advanced_selection_menu",
+    "descaling",
+    "steam_out",
+    "error",
+    "power_save",
+    "over_heat",
+    "diagnostic_mode",
+    "ble_settings",
+    "factory_reset",
+    "water_hardness_settings",
+    "stand_by_delay_settings",
+    "unknown",
+]
 
-DEVICE_CLASS_CAPS='caps'
-CAPS_UNITS = 'caps'
+SENSOR_DESCRIPTIONS: tuple[SensorEntityDescription, ...] = (
+    SensorEntityDescription(
+        key="state",
+        translation_key="state",
+        device_class=SensorDeviceClass.ENUM,
+        options=MACHINE_STATE_OPTIONS,
+        icon="mdi:coffee-maker",
+    ),
+    SensorEntityDescription(
+        key="water_is_empty",
+        translation_key="water_is_empty",
+        device_class=SensorDeviceClass.ENUM,
+        options=["not_empty", "empty"],
+        icon="mdi:water-off",
+    ),
+    SensorEntityDescription(
+        key="descaling_needed",
+        translation_key="descaling_needed",
+        device_class=SensorDeviceClass.ENUM,
+        options=["not_needed", "needed"],
+        icon="mdi:coffee-maker-check",
+    ),
+    SensorEntityDescription(
+        key="capsule_mechanism_jammed",
+        translation_key="capsule_mechanism_jammed",
+        device_class=SensorDeviceClass.ENUM,
+        options=["not_jammed", "jammed"],
+        icon="mdi:alert-circle-outline",
+    ),
+    SensorEntityDescription(
+        key="water_fresh",
+        translation_key="water_fresh",
+        device_class=SensorDeviceClass.ENUM,
+        options=["not_fresh", "fresh"],
+        icon="mdi:water-check",
+    ),
+    SensorEntityDescription(
+        key="descaling_counter",
+        translation_key="descaling_counter",
+        icon="mdi:counter",
+    ),
+    SensorEntityDescription(
+        key="caps_number",
+        translation_key="caps_number",
+        icon="mdi:coffee-outline",
+    ),
+    SensorEntityDescription(
+        key="slider",
+        translation_key="slider",
+        device_class=SensorDeviceClass.ENUM,
+        options=["open", "closed"],
+        icon="mdi:door-sliding",
+    ),
+    SensorEntityDescription(
+        key="water_hardness",
+        translation_key="water_hardness",
+        device_class=SensorDeviceClass.ENUM,
+        options=["level_0", "level_1", "level_2", "level_3", "level_4"],
+        icon="mdi:water-percent",
+    ),
+)
 
-from .const import DOMAIN
 
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
-    vol.Required(CONF_ADDRESS, default=''): cv.string,
-    vol.Required(CONF_TOKEN): cv.string,
-    vol.Optional(CONF_SCAN_INTERVAL, default=SCAN_INTERVAL): cv.time_period,
-})
+async def async_setup_entry(
+    _hass: HomeAssistant,
+    entry: NespressoConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
+) -> None:
+    """Set up sensors for a Nespresso config entry."""
+    coordinator = entry.runtime_data
+    available_keys = set(coordinator.data)
+    unknown_keys = available_keys.difference(description.key for description in SENSOR_DESCRIPTIONS)
+    if unknown_keys:
+        _LOGGER.debug("Ignoring unsupported Nespresso sensor keys: %s", unknown_keys)
 
-
-class Sensor:
-    def __init__(self, unit, unit_scale, device_class, icon):
-        self.unit = unit
-        self.unit_scale = unit_scale
-        self.device_class = device_class
-        self.icon = icon
-
-    def set_unit_scale(self, unit, unit_scale):
-        self.unit = unit
-        self.unit_scale = unit_scale
-
-    def get_extra_attributes(self, data):
-        return {}
+    async_add_entities(
+        NespressoSensor(coordinator, description)
+        for description in SENSOR_DESCRIPTIONS
+        if description.key in available_keys
+    )
 
 
-DEVICE_SENSOR_SPECIFICS = { "state":Sensor(None, None, None, None),
-                            "water_is_empty":Sensor(None, None, None, 'mdi:water-off'),
-                            "descaling_needed":Sensor(None, None, None, 'mdi:silverware-clean'),
-                            "capsule_mechanism_jammed":Sensor(None, None, None, None),
-                            "always_1":Sensor(None, None, None, 'mdi:numeric-1'),
-                            "water_temp_low":Sensor(None, None, None, 'mdi:snowflake-alert'),
-                            "awake":Sensor(None, None, None, 'mdi:sleep-off'),
-                            "water_engadged":Sensor(None, None, None, None),
-                            "sleeping":Sensor(None, None, None, 'mdi:sleep'),
-                            "tray_sensor_during_brewing":Sensor(None, None, None, None),
-                            "tray_open_tray_sensor_full":Sensor(None, None, None, 'mdi:coffee-off-outline'),
-                            "capsule_engaged":Sensor(None, None, None, None),
-                            "Fault":Sensor(None, None, None, 'mdi:alert-circle-outline'),
-                            "descaling_counter":Sensor(None, None, None, 'mdi:silverware-clean'),
-                            "water_hardness":Sensor(None, None, None, 'mdi:water-percent'),
-                            "slider":Sensor(None, None, BinarySensorDeviceClass.DOOR, 'mdi:gate-and'),
-                            "caps_number": Sensor(CAPS_UNITS, None, DEVICE_CLASS_CAPS, 'mdi:counter'),
-                            "water_fresh": Sensor(None, None, None, None)
-                           }
+class NespressoSensor(CoordinatorEntity[NespressoDataUpdateCoordinator], SensorEntity):
+    """Representation of one Nespresso data point."""
 
+    _attr_has_entity_name = True
 
-async def async_setup_entry(hass: HomeAssistant, config: ConfigEntry, async_add_entities: AddEntitiesCallback, discovery_info=None) -> None:
-    """Set up the Nespresso sensor."""
-    scan_interval = SCAN_INTERVAL
-    mac = config.data.get(CONF_ADDRESS)
-    auth = config.data.get(CONF_TOKEN)
+    def __init__(
+        self,
+        coordinator: NespressoDataUpdateCoordinator,
+        description: SensorEntityDescription,
+    ) -> None:
+        """Initialize a coordinator-backed sensor."""
+        super().__init__(coordinator)
+        self.entity_description = description
+        self._attr_unique_id = f"{coordinator.address}_{description.key}"
 
-    _LOGGER.debug("Create the top level device..")
-    device_registry = dr.async_get(hass)
-
-    _LOGGER.debug("Searching for Nespresso sensors...")
-    try:
-        Nespressodetect = NespressoClient(scan_interval, auth, mac)
-        ble_device = async_ble_device_from_address(hass, mac)
-        await Nespressodetect.connect(ble_device)
-    except UnboundLocalError:
-        raise ConfigEntryNotReady()
-    try:
-        _LOGGER.debug("Getting info about device(s)")
-        devices_info = await Nespressodetect.get_info()
-        for mac, dev in devices_info.items():
-            _LOGGER.info("{}: {}".format(mac, dev))
-
-        NespressoDeviceEntry = device_registry.async_get_or_create(
-            config_entry_id=config.entry_id,
-            connections={(dr.CONNECTION_NETWORK_MAC, mac)},
-            identifiers={(DOMAIN, mac)},
+        machine = coordinator.machine
+        assert machine is not None
+        self._attr_device_info = DeviceInfo(
+            connections={(dr.CONNECTION_BLUETOOTH, coordinator.address)},
+            identifiers={(DOMAIN, coordinator.address)},
             manufacturer="Nespresso",
-            suggested_area="Kitchen",
-            name=dev.name,
-            model=dev.model.name,
-            sw_version=dev.fw_version,
-            hw_version=dev.hw_version,
-            serial_number=dev.serial,
-        )
-
-
-        _LOGGER.debug("Getting sensors")
-        devices_sensors = await Nespressodetect.get_sensors()
-        for mac, sensors in devices_sensors.items():
-            for sensor in sensors:
-                _LOGGER.debug("{}: Found sensor UUID: {}".format(mac, sensor))
-
-        _LOGGER.debug("Get initial sensor data to populate HA entities")
-        ha_entities = []
-        sensordata = await Nespressodetect.get_sensor_data()
-        for mac, data in sensordata.items():
-            for name, val in data.items():
-                _LOGGER.debug("{}: {}: {}".format(mac, name, val))
-                ha_entities.append(NespressoSensor(mac, auth, name, Nespressodetect, devices_info[mac].manufacturer,
-                                                   DEVICE_SENSOR_SPECIFICS[name], NespressoDeviceEntry))
-        
-        await Nespressodetect.disconnect()
-    except:
-        _LOGGER.exception("Failed intial setup.")
-        return
-
-    async_add_entities(ha_entities, True)
-    
-    async def brew(call):
-        """Send a command command."""
-        try:
-            brewType = BrewType[call.data.get('brew_type').upper()] if call.data.get('brew_type') else None
-            temprature = Temprature[call.data.get('brew_temp').upper()] if call.data.get('brew_temp') else Temprature.MEDIUM
-            coffee_ml = call.data.get('coffee_ml')
-            water_ml = call.data.get('water_ml')
-        except KeyError:
-            brewType = None
-            _LOGGER.debug(f"Brew Failed - Recepie: {brewType}, Temp: {temprature} ")
-        
-        try:
-            ble_device = async_ble_device_from_address(hass, mac)
-            conn_status = await Nespressodetect.connect(ble_device)
-            if conn_status:
-                if coffee_ml and water_ml:
-                    response =  await Nespressodetect.brew_custom(coffee_ml=coffee_ml, water_ml=water_ml, temp=temprature)
-                else:
-                    response =  await Nespressodetect.brew_predefined(brew=brewType, temp=temprature)
-                await Nespressodetect.disconnect()
-                return response
-            _LOGGER.error(f"Connection failed with {ble_device.name}")
-            return None
-        except:
-            _LOGGER.debug(f"Brew Failed - Recepie: {brewType}, Temp: {temprature} ")
-
-        return None
-
-    async def caps(call):
-        """Update the caps counter"""
-        caps = call.data.get('caps')
-
-        try: 
-            ble_device = async_ble_device_from_address(hass, mac)
-            conn_status = await Nespressodetect.connect(ble_device)
-            if conn_status:
-                if caps:
-                    caps = int(round(caps))
-                    await Nespressodetect.update_caps_counter(caps)
-                    await Nespressodetect.disconnect()
-                    Nespressodetect.sensordata[mac]['caps_number'] = caps
-                    _LOGGER.debug(f'Cap Counter updated')
-                    return True
-            _LOGGER.error(f"Connection failed with {ble_device.name}")
-            return None
-        except Exception as e:
-            _LOGGER.exception("Updating caps counter failed: %s", e)
-
-        return None
-    
-
-    hass.services.async_register(DOMAIN, "coffee", brew)
-    hass.services.async_register(DOMAIN, "caps", caps)
-    
-class NespressoSensor(Entity):
-    """General Representation of an Nespresso sensor."""
-    def __init__(self, mac, auth, name, device, device_info, sensor_specifics, device_entry):
-        """Initialize a sensor."""
-        self._device_entry = device_entry
-        self.device = device
-        self._mac = mac
-        self.auth = auth
-        self._name = '{}-{}'.format(device_info, name)
-        _LOGGER.debug("Added sensor entity {}".format(self._name))
-        self._sensor_name = name
-        self._device_class = sensor_specifics.device_class
-        self._state = STATE_UNKNOWN
-        self._sensor_specifics = sensor_specifics
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        """Return the device info."""
-        return DeviceInfo(
-            identifiers={
-                # Serial numbers are unique identifiers within a specific domain
-                (DOMAIN, self._mac)
-            },
-            name=self.name
+            name=machine.name,
+            model=(
+                machine.model.name.replace("_", " ").title()
+                if machine.model is not None
+                else machine.name
+            ),
+            serial_number=machine.serial,
+            sw_version=machine.fw_version,
+            hw_version=machine.hw_version,
         )
 
     @property
-    def name(self):
-        """Return the name of the sensor."""
-        return self.friendly_name
-    
-    @property
-    def friendly_name(self):
-        """Return the friendly name of the sensor"""
-        return' '.join(word.capitalize() for word in self._sensor_name.split('_'))
-
-    @property
-    def state(self):
-        """Return the state of the device."""
-        return self._state
-
-    @property
-    def icon(self):
-        """Return the icon of the sensor."""
-        return self._sensor_specifics.icon
-
-    @property
-    def device_class(self):
-        """Return the icon of the sensor."""
-        return self._sensor_specifics.device_class
-
-    @property
-    def unit_of_measurement(self):
-        """Return the unit the value is expressed in."""
-        return self._sensor_specifics.unit
-
-    @property
-    def unique_id(self):
-        return self._name
-
-    @property
-    def device_state_attributes(self):
-        """Return the state attributes of the sensor."""
-        attributes = self._sensor_specifics.get_extra_attributes(self._state)
-        return attributes
-
-    async def async_update(self) -> None:
-        """Fetch new state data for the sensor asynchronously.
-        This is the only method that should fetch new data for Home Assistant.
-        """
-        now = datetime.now()
-        if self.device.data_last_updated is None or now - self.device.data_last_updated > SCAN_INTERVAL:
-            async with self.device.data_update_lock:
-                if self.device.data_last_updated is None or now - self.device.data_last_updated > SCAN_INTERVAL:
-                    try:
-                        ble_device = async_ble_device_from_address(self.hass, self._mac)
-                        conn_status = await self.device.connect(ble_device)
-                    except UnboundLocalError:
-                        raise ConfigEntryNotReady()
-
-                    await self.device.get_sensor_data()
-                    await self.device.disconnect()
-        value = self.device.sensordata[self._mac][self._sensor_name]
-
-        if type(value) is str:
-            self._state = ' '.join(word.capitalize() for word in value.split('_'))
-        elif self._sensor_specifics.unit_scale is None:
-            self._state = value
-        else:
-            self._state = round(float(value * self._sensor_specifics.unit_scale), 2)
-
-        end = datetime.now()
-        _LOGGER.debug(f'async_update() took {end - now}')
-        _LOGGER.debug("State {} {}".format(self._name, self._state))
-    
+    @override
+    def native_value(self) -> SensorValue:
+        """Return the latest native sensor value."""
+        value = self.coordinator.data.get(self.entity_description.key)
+        if isinstance(value, Enum):
+            return value.name.lower()
+        if isinstance(value, str):
+            return value.lower()
+        return value

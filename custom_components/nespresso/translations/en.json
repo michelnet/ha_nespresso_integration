@@ -1,27 +1,208 @@
 {
-    "config": {
-        "abort": {
-            "already_configured": "Device is already configured",
-            "already_in_progress": "Configuration flow is already in progress",
-            "no_devices_found": "No devices found on the network"
+  "config": {
+    "abort": {
+      "already_configured": "This machine is already configured.",
+      "already_in_progress": "Configuration of this machine is already in progress.",
+      "no_devices_found": "No supported Nespresso machines were found.",
+      "not_supported": "This Nespresso machine is not supported.",
+      "reauth_successful": "The new authentication token was saved successfully."
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to the machine.",
+      "cannot_pair": "Failed to pair with the machine.",
+      "invalid_auth": "The authentication token is invalid.",
+      "unknown": "An unexpected error occurred."
+    },
+    "step": {
+      "bluetooth_confirm": {
+        "data": {
+          "token": "Authentication token"
         },
-        "error": {
-            "cannot_connect": "Failed to connect",
-            "cannot_pair": "Unable to pair with device",
-            "invalid_auth": "Invalid authentication",
-            "unknown": "Unexpected error"
+        "data_description": {
+          "token": "Optional existing token. Leave this empty to pair the machine."
         },
-        "step": {
-            "bluetooth_confirm": {
-                "description": "Do you want to set up {name}?"
-            },
-            "user": {
-                "data": {
-                    "device": "Device",
-                    "token": "Access token"
-                },
-                "description": "Please choose your device from the list below to start the pairing process. Ensure that your device is in factory reset mode and ready to pair with a new device. Alternatively, you can enter an existing authentication key if you have one."
-            }
-        }
+        "description": "Do you want to add the discovered Nespresso machine {name} to Home Assistant?",
+        "title": "Confirm Nespresso machine"
+      },
+      "reauth_confirm": {
+        "data": {
+          "token": "Authentication token"
+        },
+        "data_description": {
+          "token": "Enter a valid authentication token for this machine."
+        },
+        "description": "The authentication token for {name} is no longer valid. Enter a new token to restore communication.",
+        "title": "Reauthenticate {name}"
+      },
+      "user": {
+        "data": {
+          "address": "Bluetooth address",
+          "token": "Authentication token"
+        },
+        "data_description": {
+          "address": "Select the discovered Nespresso machine to configure.",
+          "token": "Optional existing token. Leave this empty to pair the machine."
+        },
+        "description": "Select a discovered Nespresso machine. Reuse an existing authentication token when possible; otherwise, make sure the machine is ready to pair.",
+        "title": "Set up Nespresso"
+      }
     }
+  },
+  "entity": {
+    "sensor": {
+      "caps_number": {
+        "name": "Capsules remaining"
+      },
+      "capsule_mechanism_jammed": {
+        "name": "Capsule mechanism",
+        "state": {
+          "jammed": "Jammed",
+          "not_jammed": "Not jammed"
+        }
+      },
+      "descaling_counter": {
+        "name": "Descaling counter"
+      },
+      "descaling_needed": {
+        "name": "Descaling requirement",
+        "state": {
+          "needed": "Needed",
+          "not_needed": "Not needed"
+        }
+      },
+      "slider": {
+        "name": "Slider",
+        "state": {
+          "closed": "Closed",
+          "open": "Open"
+        }
+      },
+      "state": {
+        "name": "Machine state",
+        "state": {
+          "advanced_selection_menu": "Advanced selection menu",
+          "ble_settings": "Bluetooth settings",
+          "brewing": "Brewing",
+          "descaling": "Descaling",
+          "descaling_ready": "Ready for descaling",
+          "diagnostic_mode": "Diagnostic mode",
+          "error": "Error",
+          "factory_reset": "Factory reset",
+          "heat_up": "Heating up",
+          "over_heat": "Overheated",
+          "power_save": "Power save",
+          "ready": "Ready",
+          "reset": "Reset",
+          "stand_by_delay_settings": "Standby delay settings",
+          "steam_out": "Steam out",
+          "unknown": "Unknown",
+          "water_hardness_settings": "Water hardness settings"
+        }
+      },
+      "water_fresh": {
+        "name": "Water freshness",
+        "state": {
+          "fresh": "Fresh",
+          "not_fresh": "Not fresh"
+        }
+      },
+      "water_hardness": {
+        "name": "Water hardness",
+        "state": {
+          "level_0": "Level 0",
+          "level_1": "Level 1",
+          "level_2": "Level 2",
+          "level_3": "Level 3",
+          "level_4": "Level 4"
+        }
+      },
+      "water_is_empty": {
+        "name": "Water tank",
+        "state": {
+          "empty": "Empty",
+          "not_empty": "Not empty"
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "action_failed": {
+      "message": "The Nespresso action failed: {error}"
+    },
+    "device_entry_not_loaded": {
+      "message": "The Nespresso configuration entry for device `{device_id}` is not loaded."
+    },
+    "device_not_belonging": {
+      "message": "Device `{device_id}` does not belong to a Nespresso configuration entry."
+    },
+    "device_required": {
+      "message": "Select a Nespresso machine; no single loaded machine could be determined."
+    },
+    "invalid_device_id": {
+      "message": "The device ID `{device_id}` is invalid."
+    },
+    "missing_custom_volume": {
+      "message": "Coffee volume and water volume must be provided together for a custom recipe."
+    }
+  },
+  "selector": {
+    "brew_temperature": {
+      "options": {
+        "high": "High",
+        "low": "Low",
+        "medium": "Medium"
+      }
+    },
+    "brew_type": {
+      "options": {
+        "americano": "Americano",
+        "espresso": "Espresso",
+        "hot_water": "Hot water",
+        "lungo": "Lungo",
+        "ristretto": "Ristretto"
+      }
+    }
+  },
+  "services": {
+    "caps": {
+      "description": "Sets the capsule counter on a Nespresso machine.",
+      "fields": {
+        "caps": {
+          "description": "New number of capsules remaining.",
+          "name": "Capsule count"
+        },
+        "device_id": {
+          "description": "Machine to update. Optional when only one Nespresso machine is configured; required when multiple machines are configured.",
+          "name": "Machine"
+        }
+      },
+      "name": "Set capsule count"
+    },
+    "coffee": {
+      "description": "Starts a predefined drink or a custom-volume brew on a Nespresso machine.",
+      "fields": {
+        "brew_temp": {
+          "description": "Temperature used for brewing.",
+          "name": "Brew temperature"
+        },
+        "brew_type": {
+          "description": "Predefined drink to brew. This is ignored when both custom volumes are supplied.",
+          "name": "Drink"
+        },
+        "coffee_ml": {
+          "description": "Coffee volume in milliliters. Set this together with water volume to use a custom recipe.",
+          "name": "Coffee volume"
+        },
+        "device_id": {
+          "description": "Machine to control. Optional when only one Nespresso machine is configured; required when multiple machines are configured.",
+          "name": "Machine"
+        },
+        "water_ml": {
+          "description": "Water volume in milliliters. Set this together with coffee volume to use a custom recipe.",
+          "name": "Water volume"
+        }
+      },
+      "name": "Brew coffee"
+    }
+  }
 }

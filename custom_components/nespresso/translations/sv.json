@@ -1,27 +1,208 @@
 {
-    "config": {
-        "abort": {
-            "already_configured": "Enheten är redan konfigurerad",
-            "already_in_progress": "Konfigurationsflödet pågår",
-            "no_devices_found": "Inga enheter hittades i nätverket"
+  "config": {
+    "abort": {
+      "already_configured": "Den här maskinen är redan konfigurerad.",
+      "already_in_progress": "Konfigurationen av den här maskinen pågår redan.",
+      "no_devices_found": "Inga Nespresso-maskiner som stöds hittades.",
+      "not_supported": "Den här Nespresso-maskinen stöds inte.",
+      "reauth_successful": "Den nya autentiseringstoken har sparats."
+    },
+    "error": {
+      "cannot_connect": "Det gick inte att ansluta till maskinen.",
+      "cannot_pair": "Det gick inte att parkoppla maskinen.",
+      "invalid_auth": "Autentiseringstoken är ogiltig.",
+      "unknown": "Ett oväntat fel inträffade."
+    },
+    "step": {
+      "bluetooth_confirm": {
+        "data": {
+          "token": "Autentiseringstoken"
         },
-        "error": {
-            "cannot_connect": "Misslyckades att ansluta",
-            "cannot_pair": "Kunde inte para enheten",
-            "invalid_auth": "Ogiltig autensiering",
-            "unknown": "Oväntat fel"
+        "data_description": {
+          "token": "Valfri befintlig token. Lämna fältet tomt för att parkoppla maskinen."
         },
-        "step": {
-            "bluetooth_confirm": {
-                "description": "Vill du ansluta {name}?"
-            },
-            "user": {
-                "data": {
-                    "device": "Enhet",
-                    "token": "autentiseringstoken"
-                },
-                "description": "Välj din enhet från listan nedan för att starta anslutningsprocessen. Försäkra dig om att din enhet är i ett fabriksåterställt läge och redo att ansluta. Alternativt, kan du ange en exsisterande autensieringsnyckel om du har en."
-            }
-        }
+        "description": "Vill du lägga till den upptäckta Nespresso-maskinen {name} i Home Assistant?",
+        "title": "Bekräfta Nespresso-maskin"
+      },
+      "reauth_confirm": {
+        "data": {
+          "token": "Autentiseringstoken"
+        },
+        "data_description": {
+          "token": "Ange en giltig autentiseringstoken för den här maskinen."
+        },
+        "description": "Autentiseringstoken för {name} är inte längre giltig. Ange en ny token för att återställa kommunikationen.",
+        "title": "Autentisera {name} igen"
+      },
+      "user": {
+        "data": {
+          "address": "Bluetooth-adress",
+          "token": "Autentiseringstoken"
+        },
+        "data_description": {
+          "address": "Välj den upptäckta Nespresso-maskin som ska konfigureras.",
+          "token": "Valfri befintlig token. Lämna fältet tomt för att parkoppla maskinen."
+        },
+        "description": "Välj en upptäckt Nespresso-maskin. Återanvänd om möjligt en befintlig autentiseringstoken. Kontrollera annars att maskinen är redo för parkoppling.",
+        "title": "Konfigurera Nespresso"
+      }
     }
+  },
+  "entity": {
+    "sensor": {
+      "caps_number": {
+        "name": "Återstående kapslar"
+      },
+      "capsule_mechanism_jammed": {
+        "name": "Kapselmekanism",
+        "state": {
+          "jammed": "Blockerad",
+          "not_jammed": "Inte blockerad"
+        }
+      },
+      "descaling_counter": {
+        "name": "Avkalkningsräknare"
+      },
+      "descaling_needed": {
+        "name": "Avkalkningsbehov",
+        "state": {
+          "needed": "Behövs",
+          "not_needed": "Behövs inte"
+        }
+      },
+      "slider": {
+        "name": "Skjutlucka",
+        "state": {
+          "closed": "Stängd",
+          "open": "Öppen"
+        }
+      },
+      "state": {
+        "name": "Maskinstatus",
+        "state": {
+          "advanced_selection_menu": "Avancerad valmeny",
+          "ble_settings": "Bluetooth-inställningar",
+          "brewing": "Brygger",
+          "descaling": "Avkalkning",
+          "descaling_ready": "Klar för avkalkning",
+          "diagnostic_mode": "Diagnostikläge",
+          "error": "Fel",
+          "factory_reset": "Fabriksåterställning",
+          "heat_up": "Värmer upp",
+          "over_heat": "Överhettad",
+          "power_save": "Energisparläge",
+          "ready": "Klar",
+          "reset": "Återställning",
+          "stand_by_delay_settings": "Inställningar för standbyfördröjning",
+          "steam_out": "Ångtömning",
+          "unknown": "Okänd",
+          "water_hardness_settings": "Inställningar för vattenhårdhet"
+        }
+      },
+      "water_fresh": {
+        "name": "Vattnets färskhet",
+        "state": {
+          "fresh": "Färskt",
+          "not_fresh": "Inte färskt"
+        }
+      },
+      "water_hardness": {
+        "name": "Vattenhårdhet",
+        "state": {
+          "level_0": "Nivå 0",
+          "level_1": "Nivå 1",
+          "level_2": "Nivå 2",
+          "level_3": "Nivå 3",
+          "level_4": "Nivå 4"
+        }
+      },
+      "water_is_empty": {
+        "name": "Vattentank",
+        "state": {
+          "empty": "Tom",
+          "not_empty": "Inte tom"
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "action_failed": {
+      "message": "Nespresso-åtgärden misslyckades: {error}"
+    },
+    "device_entry_not_loaded": {
+      "message": "Nespresso-konfigurationsposten för enheten `{device_id}` är inte inläst."
+    },
+    "device_not_belonging": {
+      "message": "Enheten `{device_id}` tillhör inte någon Nespresso-konfigurationspost."
+    },
+    "device_required": {
+      "message": "Välj en Nespresso-maskin; ingen enskild inläst maskin kunde fastställas."
+    },
+    "invalid_device_id": {
+      "message": "Enhets-ID:t `{device_id}` är ogiltigt."
+    },
+    "missing_custom_volume": {
+      "message": "Kaffevolym och vattenvolym måste anges tillsammans för ett anpassat recept."
+    }
+  },
+  "selector": {
+    "brew_temperature": {
+      "options": {
+        "high": "Hög",
+        "low": "Låg",
+        "medium": "Medel"
+      }
+    },
+    "brew_type": {
+      "options": {
+        "americano": "Americano",
+        "espresso": "Espresso",
+        "hot_water": "Varmvatten",
+        "lungo": "Lungo",
+        "ristretto": "Ristretto"
+      }
+    }
+  },
+  "services": {
+    "caps": {
+      "description": "Ställer in kapselräknaren på en Nespresso-maskin.",
+      "fields": {
+        "caps": {
+          "description": "Nytt antal återstående kapslar.",
+          "name": "Antal kapslar"
+        },
+        "device_id": {
+          "description": "Maskin som ska uppdateras. Valfri när endast en Nespresso-maskin är konfigurerad, obligatorisk när flera maskiner är konfigurerade.",
+          "name": "Maskin"
+        }
+      },
+      "name": "Ställ in antal kapslar"
+    },
+    "coffee": {
+      "description": "Startar en fördefinierad dryck eller bryggning med anpassade volymer på en Nespresso-maskin.",
+      "fields": {
+        "brew_temp": {
+          "description": "Temperatur som används vid bryggning.",
+          "name": "Bryggtemperatur"
+        },
+        "brew_type": {
+          "description": "Fördefinierad dryck som ska bryggas. Valet ignoreras när båda anpassade volymerna anges.",
+          "name": "Dryck"
+        },
+        "coffee_ml": {
+          "description": "Kaffevolym i milliliter. Ange tillsammans med vattenvolym för ett anpassat recept.",
+          "name": "Kaffevolym"
+        },
+        "device_id": {
+          "description": "Maskin som ska styras. Valfri när endast en Nespresso-maskin är konfigurerad, obligatorisk när flera maskiner är konfigurerade.",
+          "name": "Maskin"
+        },
+        "water_ml": {
+          "description": "Vattenvolym i milliliter. Ange tillsammans med kaffevolym för ett anpassat recept.",
+          "name": "Vattenvolym"
+        }
+      },
+      "name": "Brygg kaffe"
+    }
+  }
 }

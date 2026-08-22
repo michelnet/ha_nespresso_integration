@@ -1,87 +1,92 @@
-try:
-    from enums import WaterIsEmpty, DescalingNeeded, CapsuleMechanismJammed, SliderOpen, WaterIsFresh, WaterHardness, MachineState
-except ImportError:
-    from .enums import WaterIsEmpty, DescalingNeeded, CapsuleMechanismJammed, SliderOpen, WaterIsFresh, WaterHardness, MachineState
+"""Decode status sensor characteristics exposed by a Nespresso machine."""
+
+from __future__ import annotations
+
+from .enums import (
+    CapsuleMechanismJammed,
+    DescalingNeeded,
+    MachineState,
+    SliderOpen,
+    WaterHardness,
+    WaterIsEmpty,
+    WaterIsFresh,
+)
+from .machines import decode_pairing_key_state
+
 
 class MachineStatus:
-    def __init__(self, raw_data):
+    """Decoder for the primary machine-status byte buffer."""
+
+    def __init__(self, raw_data: bytes | bytearray) -> None:
         self.raw_data = raw_data
 
-    def select_bits(self, start_bit, length):
-        value = int.from_bytes(self.raw_data)
-        value >>= (len(self.raw_data) * 8 - start_bit - length)
-        mask = (1 << length) - 1
-        return value & mask
+    def select_bits(self, start_bit: int, length: int) -> int:
+        if start_bit < 0:
+            raise ValueError("Start bit cannot be negative")
+        if length <= 0:
+            raise ValueError("Bit length must be positive")
+        bit_count = len(self.raw_data) * 8
+        if start_bit + length > bit_count:
+            raise ValueError(f"Bits {start_bit}:{start_bit + length} exceed the status buffer")
 
-    def decode_water_is_empty(self):
+        value = int.from_bytes(self.raw_data, byteorder="big")
+        value >>= bit_count - start_bit - length
+        return value & ((1 << length) - 1)
+
+    def decode_water_is_empty(self) -> WaterIsEmpty:
         return WaterIsEmpty(self.raw_data[0] & 1)
 
-    def decode_descaling_needed(self):
+    def decode_descaling_needed(self) -> DescalingNeeded:
         return DescalingNeeded((self.raw_data[0] >> 2) & 1)
 
-    def decode_capsule_mechanism_jammed(self):
+    def decode_capsule_mechanism_jammed(self) -> CapsuleMechanismJammed:
         return CapsuleMechanismJammed((self.raw_data[0] >> 4) & 1)
-    
-    def decode_awake(self): #TODO: This isn't right.
-        return bool((self.raw_data[0] >> 2) & 1)
-    
-    def decode_water_fresh(self):
+
+    def decode_water_fresh(self) -> WaterIsFresh:
         return WaterIsFresh(self.raw_data[1] & 1)
 
-    # Add more decode methods here for each status...
-
-    def decode(self):
+    def decode(self) -> dict[str, str | int]:
+        if len(self.raw_data) < 9:
+            raise ValueError(
+                f"Machine status must contain at least 9 bytes, got {len(self.raw_data)}"
+            )
         return {
             "water_is_empty": self.decode_water_is_empty().name,
             "descaling_needed": self.decode_descaling_needed().name,
             "capsule_mechanism_jammed": self.decode_capsule_mechanism_jammed().name,
             "water_fresh": self.decode_water_fresh().name,
             "state": MachineState(self.select_bits(12, 4)).name,
-            "descaling_counter": int.from_bytes(self.raw_data[6:9])
-            
+            "descaling_counter": int.from_bytes(self.raw_data[6:9], byteorder="big"),
         }
-    
+
+
 class BaseDecode:
-    def __init__(self, name, format_type):
+    """Dispatch characteristic data to the matching value decoder."""
+
+    def __init__(self, name: str, format_type: str) -> None:
         self.name = name
         self.format_type = format_type
 
-    def decode_data(self, raw_data):
+    def decode_data(self, raw_data: bytes | bytearray) -> dict[str, object]:
         if self.format_type == "state":
-            status_decoder = MachineStatus(raw_data)
-            return status_decoder.decode()
-        elif self.format_type == "caps_number":
-            return {self.name: int.from_bytes(raw_data, byteorder='big')}
-        elif self.format_type == "pairing_status":
-            return {self.name: raw_data != bytearray(b'\x00')}
-        elif self.format_type == "water_hardness":
-            return {self.name: WaterHardness(int.from_bytes(raw_data[2:3])).name}
-        elif self.format_type == "slider":
-            a = (raw_data[0] >> 1) & 1
+            return MachineStatus(raw_data).decode()
+        if self.format_type == "caps_number":
+            if not raw_data:
+                raise ValueError("Capsule count cannot be empty")
+            return {self.name: int.from_bytes(raw_data, byteorder="big")}
+        if self.format_type == "pairing_status":
+            if not raw_data:
+                raise ValueError("Pairing status cannot be empty")
+            pairing_key_state = decode_pairing_key_state(raw_data)
+            if pairing_key_state == "UNDEFINED":
+                raise ValueError("Pairing status is undefined")
+            return {self.name: pairing_key_state == "PRESENT"}
+        if self.format_type == "water_hardness":
+            if len(raw_data) < 3:
+                raise ValueError("Water-hardness data must contain at least three bytes")
+            return {self.name: WaterHardness(raw_data[2]).name}
+        if self.format_type == "slider":
+            if not raw_data:
+                raise ValueError("Slider data cannot be empty")
             return {self.name: SliderOpen((raw_data[0] >> 1) & 1).name}
-
-        # Default case
         return {self.name: raw_data}
-
-if __name__ == '__main__':
-    state_bytes = bytearray(b'A\x84\x7f\xec\x00\x00\xff\xff')
-    caps_bytes = bytearray(b'\xff\xff')
-    slider_bytes = bytearray(b'\x00')
-    water_hardness_bytes = bytearray(b'\x02\x1c\x04\x00')
-    decoder = BaseDecode("state", "state")
-    decoded_data = decoder.decode_data(state_bytes)
-    print(decoded_data)
-
-    # "water_is_empty":BYTE0.bit0,
-    #                 "descaling_needed":BYTE0.bit2,
-    #                 "capsule_mechanism_jammed":BYTE0.bit4,
-    #                 "always_1":BYTE0.bit6,
-    #                 "water_temp_low":BYTE1.bit0,
-    #                 "awake":BYTE1.bit1,
-    #                 "water_engadged":BYTE1.bit2,
-    #                 "sleeping":BYTE1.bit3,
-    #                 "tray_sensor_during_brewing":BYTE1.bit4,
-    #                 "tray_open_tray_sensor_full":BYTE1.bit6,
-    #                 "capsule_engaged":BYTE1.bit7,
-    #                 "Fault":BYTE3.bit5,
-    #                 "descaling_counter":descaling_counter

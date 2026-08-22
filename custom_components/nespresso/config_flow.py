@@ -1,195 +1,260 @@
-"""Config flow for nespresso integration."""
+"""Config flow for the Nespresso integration."""
+
 from __future__ import annotations
 
 import logging
-from typing import Any
+from collections.abc import Mapping
+from contextlib import suppress
+from dataclasses import dataclass
+from typing import Any, override
 
 import voluptuous as vol
-
-from homeassistant import config_entries
-from homeassistant.const import CONF_ADDRESS, CONF_NAME, CONF_TOKEN
-from homeassistant.core import HomeAssistant
-from homeassistant.data_entry_flow import FlowResult
-from homeassistant.exceptions import HomeAssistantError
-import homeassistant.helpers.config_validation as cv
+from homeassistant.components import bluetooth
 from homeassistant.components.bluetooth import (
-    BluetoothScanningMode,
-    BluetoothServiceInfo,
+    BluetoothServiceInfoBleak,
+    async_ble_device_from_address,
     async_discovered_service_info,
-    async_process_advertisements,
-    async_ble_device_from_address
 )
+from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.const import CONF_ADDRESS, CONF_TOKEN
+from homeassistant.helpers import config_validation as cv
 
+from .const import DOMAIN, NESPRESSO_SERVICE_UUID
 from .machines import supported
-from .nespresso import NespressoClient
-from bleak import BleakClient
-from bleak_retry_connector import establish_connection
-
-from .const import DOMAIN
+from .nespresso import (
+    NespressoAuthenticationError,
+    NespressoClient,
+    NespressoConnectionError,
+    NespressoError,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
-class PlaceholderHub:
-    """Placeholder class to make tests pass.
-
-    TODO Remove this placeholder class and replace with things from your PyPI package.
-    """
-
-    def __init__(self, host: str) -> None:
-        """Initialize."""
-        self.host = host
-
-    async def authenticate(self, username: str, password: str) -> bool:
-        """Test if we can authenticate with the host."""
-        return True
+AUTH_TOKEN_VALIDATOR = vol.All(
+    cv.string,
+    vol.Strip,
+    cv.matches_regex(r"^[0-9a-fA-F]{16}$"),
+)
 
 
-async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, Any]:
-    """Validate the user input allows us to connect.
+@dataclass(frozen=True, slots=True)
+class Discovery:
+    """A discovered, supported Nespresso device."""
 
-    Data has the keys from STEP_USER_DATA_SCHEMA with values provided by the user.
-    """
-    # TODO validate the data can be used to set up a connection.
-
-    # If your PyPI package is not built with async, pass your methods
-    # to the executor:
-    # await hass.async_add_executor_job(
-    #     your_validate_func, data["username"], data["password"]
-    # )
-
-    hub = PlaceholderHub(data["host"])
-
-    if not await hub.authenticate(data["username"], data["password"]):
-        raise InvalidAuth
-
-    # If you cannot connect:
-    # throw CannotConnect
-    # If the authentication is wrong:
-    # InvalidAuth
-
-    # Return info that you want to store in the config entry.
-    return {"title": "Name of the device"}
+    title: str
+    service_info: BluetoothServiceInfoBleak
 
 
-class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for nespresso."""
-    _discovered_devices: dict = {}
+class NespressoConfigFlow(ConfigFlow, domain=DOMAIN):
+    """Handle a config flow for a Nespresso Bluetooth machine."""
 
-    VERSION = 1
+    VERSION = 2
 
+    def __init__(self) -> None:
+        """Initialize per-flow discovery state."""
+        self._discovery_info: BluetoothServiceInfoBleak | None = None
+        self._discovered_devices: dict[str, Discovery] = {}
+        self._pending_auth_codes: dict[str, str] = {}
+        self._reauth_address: str | None = None
+
+    @staticmethod
+    def _is_candidate(discovery_info: BluetoothServiceInfoBleak) -> bool:
+        """Return whether an advertisement can be a supported machine."""
+        return bool(
+            supported(discovery_info.name)
+            or NESPRESSO_SERVICE_UUID
+            in (service_uuid.lower() for service_uuid in discovery_info.service_uuids)
+        )
+
+    async def _async_validate_device(self, address: str, auth_code: str | None) -> tuple[str, str]:
+        """Connect, authenticate, and return the machine title and auth code."""
+        ble_device = async_ble_device_from_address(self.hass, address, connectable=True)
+        if ble_device is None:
+            raise NespressoConnectionError(f"Bluetooth device {address} is not currently available")
+
+        supplied_auth_code = auth_code is not None
+        client = NespressoClient(
+            auth_code=auth_code or self._pending_auth_codes.get(address),
+            mac=address,
+        )
+        try:
+            if not await client.connect(ble_device):
+                raise NespressoConnectionError(f"Unable to connect to Bluetooth device {address}")
+            machine = await client.load_model()
+            if machine is None or not supported(machine.name):
+                raise NespressoError("Unsupported Nespresso machine")
+            if client.auth_code is None:
+                raise NespressoAuthenticationError(
+                    "The machine did not provide a usable authentication key"
+                )
+            return machine.name, client.auth_code
+        finally:
+            # Keep a newly generated key for a retry if onboarding succeeded but
+            # a later verification read failed. Losing that key would leave the
+            # machine paired with a credential the flow no longer knows.
+            if not supplied_auth_code and client.auth_code is not None:
+                self._pending_auth_codes[address] = client.auth_code
+            # Cleanup must never hide the actual validation or authentication
+            # error shown by the config flow.
+            with suppress(Exception):
+                await client.disconnect()
+
+    async def _async_try_validate(
+        self, address: str, auth_code: str | None
+    ) -> tuple[tuple[str, str] | None, dict[str, str]]:
+        """Validate flow input and translate expected failures to form errors."""
+        try:
+            return await self._async_validate_device(address, auth_code), {}
+        except NespressoAuthenticationError as err:
+            _LOGGER.debug("Nespresso authentication failed: %s", err)
+            return None, {"base": "invalid_auth" if auth_code is not None else "cannot_pair"}
+        except NespressoConnectionError as err:
+            _LOGGER.debug("Unable to connect to Nespresso device: %s", err)
+            return None, {"base": "cannot_connect"}
+        except NespressoError as err:
+            _LOGGER.debug("Unable to configure Nespresso device: %s", err)
+            return None, {"base": "cannot_pair"}
+        except Exception:
+            _LOGGER.exception("Unexpected error while configuring Nespresso device")
+            return None, {"base": "unknown"}
+
+    @staticmethod
+    def _token_schema(required: bool = False) -> vol.Schema:
+        """Return the authentication-key form schema."""
+        marker: vol.Marker
+        if required:
+            marker = vol.Required(CONF_TOKEN)
+        else:
+            marker = vol.Optional(CONF_TOKEN)
+        return vol.Schema({marker: AUTH_TOKEN_VALIDATOR})
+
+    @override
     async def async_step_bluetooth(
-        self, discovery_info: BluetoothServiceInfo
-    ) -> FlowResult:
-        """Handle the bluetooth discovery step."""
+        self, discovery_info: BluetoothServiceInfoBleak
+    ) -> ConfigFlowResult:
+        """Handle a Bluetooth discovery without connecting prematurely."""
+        if not self._is_candidate(discovery_info):
+            return self.async_abort(reason="not_supported")
+
         await self.async_set_unique_id(discovery_info.address)
         self._abort_if_unique_id_configured()
-        device = NespressoClient(mac=discovery_info.address)
-        ble_device = async_ble_device_from_address(self.hass, discovery_info.address)
-        await device.connect(ble_device)
-        await device.load_model()
-        await device.disconnect()
-        if not supported(discovery_info.name):
-            return self.async_abort(reason="not_supported")
-        self._discovery = discovery_info
+
+        self._discovery_info = discovery_info
+        self.context["title_placeholders"] = {"name": discovery_info.name or discovery_info.address}
         return await self.async_step_bluetooth_confirm()
 
     async def async_step_bluetooth_confirm(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Confirm discovery."""
-        assert self._discovery is not None
+    ) -> ConfigFlowResult:
+        """Confirm discovery, then pair and create the config entry."""
+        assert self._discovery_info is not None
+        errors: dict[str, str] = {}
 
-        # if user_input is not None:
-        #     if not isPairing(self._discovery):
-        #         return await self.async_step_wait_for_pairing_mode()
-
-        #     return self._create_snooz_entry(self._discovery)
-
-        self._set_confirm_only()
-        assert self._discovery.name
-        placeholders = {"name": self._discovery.name}
-        self.context["title_placeholders"] = placeholders
-        return self.async_show_form(
-            step_id="bluetooth_confirm", description_placeholders=placeholders
-        )
-
-    async def async_step_user(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Handle the user step to pick discovered device."""
         if user_input is not None:
-            name = user_input[CONF_NAME]
-
-            discovered = self._discovered_devices[name]
-
-            assert discovered is not None
-
-            self._discovery = discovered
-
-            try:
-                device = NespressoClient(mac=discovered.address)
-                if user_input.get(CONF_TOKEN):
-                    device.auth_code = user_input.get(CONF_TOKEN)
-                ble_device = async_ble_device_from_address(self.hass, discovered.address)
-                await device.connect(ble_device)
-                await device.load_model()
-                await device.disconnect()
-            except Exception as e:
-                _LOGGER.error(f"Failed to connect to device: {e}")
-                return self.async_show_form(
-                    step_id="user",
-                    errors={"base": "cannot_connect"}
+            result, errors = await self._async_try_validate(
+                self._discovery_info.address, user_input.get(CONF_TOKEN)
+            )
+            if result is not None:
+                title, auth_code = result
+                return self.async_create_entry(
+                    title=title,
+                    data={
+                        CONF_ADDRESS: self._discovery_info.address,
+                        CONF_TOKEN: auth_code,
+                    },
                 )
 
-            address = discovered.address
+        return self.async_show_form(
+            step_id="bluetooth_confirm",
+            data_schema=self._token_schema(),
+            description_placeholders=self.context["title_placeholders"],
+            errors=errors,
+        )
+
+    @override
+    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Let the user select a discovered machine."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            address: str = user_input[CONF_ADDRESS]
+            discovery = self._discovered_devices[address]
+            self._discovery_info = discovery.service_info
+
             await self.async_set_unique_id(address, raise_on_progress=False)
             self._abort_if_unique_id_configured()
-            return self._create_nespresso_entry(device)
+            self.context["title_placeholders"] = {"name": discovery.title}
 
-        configured_addresses = self._async_current_ids()
+            result, errors = await self._async_try_validate(address, user_input.get(CONF_TOKEN))
+            if result is not None:
+                title, auth_code = result
+                return self.async_create_entry(
+                    title=title,
+                    data={CONF_ADDRESS: address, CONF_TOKEN: auth_code},
+                )
 
-        for info in async_discovered_service_info(self.hass):
-            address = info.address
-            if address in configured_addresses:
-                continue
-            if supported(info.name):
-                assert info.name
-                self._discovered_devices[info.name] = info
+        if not self._discovered_devices:
+            await bluetooth.async_request_active_scan(self.hass)
+            current_addresses = self._async_current_ids(include_ignore=False)
+            for service_info in async_discovered_service_info(self.hass, True):
+                address = service_info.address
+                if (
+                    address in current_addresses
+                    or address in self._discovered_devices
+                    or not self._is_candidate(service_info)
+                ):
+                    continue
+                self._discovered_devices[address] = Discovery(
+                    title=service_info.name or address,
+                    service_info=service_info,
+                )
 
         if not self._discovered_devices:
             return self.async_abort(reason="no_devices_found")
-        
-        data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_NAME): vol.In(
-                        [
-                            d.name
-                            for d in self._discovered_devices.values()
-                        ]
-                    ),
-                    vol.Optional(CONF_TOKEN): cv.string
-                }
-            )
 
+        titles = {
+            address: discovery.title for address, discovery in self._discovered_devices.items()
+        }
         return self.async_show_form(
             step_id="user",
-            data_schema=data_schema
-        )
-    
-    def _create_nespresso_entry(self, device) -> FlowResult:
-        assert self._discovery.name
-        return self.async_create_entry(
-            title=self._discovery.name,
-            data={
-                CONF_ADDRESS: device.address,
-                CONF_TOKEN: device.auth_code,
-            },
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_ADDRESS): vol.In(titles),
+                    vol.Optional(CONF_TOKEN): AUTH_TOKEN_VALIDATOR,
+                }
+            ),
+            errors=errors,
         )
 
+    @override
+    async def async_step_reauth(self, _entry_data: Mapping[str, Any]) -> ConfigFlowResult:
+        """Start reauthentication after the stored key was rejected."""
+        entry = self._get_reauth_entry()
+        self._reauth_address = entry.data[CONF_ADDRESS]
+        self.context["title_placeholders"] = {"name": entry.title}
+        return await self.async_step_reauth_confirm()
 
-class CannotConnect(HomeAssistantError):
-    """Error to indicate we cannot connect."""
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Validate and save a replacement authentication key."""
+        assert self._reauth_address is not None
+        errors: dict[str, str] = {}
 
+        if user_input is not None:
+            result, errors = await self._async_try_validate(
+                self._reauth_address, user_input[CONF_TOKEN]
+            )
+            if result is not None:
+                title, auth_code = result
+                return self.async_update_reload_and_abort(
+                    self._get_reauth_entry(),
+                    title=title,
+                    data_updates={CONF_TOKEN: auth_code},
+                )
 
-class InvalidAuth(HomeAssistantError):
-    """Error to indicate there is invalid auth."""
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=self._token_schema(required=True),
+            description_placeholders=self.context["title_placeholders"],
+            errors=errors,
+        )

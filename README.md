@@ -1,167 +1,92 @@
-<a href="https://www.buymeacoffee.com/bulldog5046" target="_blank"><img src="https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png" alt="Buy Me A Coffee" style="height: 41px !important;width: 174px !important;box-shadow: 0px 3px 2px 0px rgba(190, 190, 190, 0.5) !important;-webkit-box-shadow: 0px 3px 2px 0px rgba(190, 190, 190, 0.5) !important;" ></a>
+# Nespresso for Home Assistant
 
+Local Bluetooth control and monitoring for supported Nespresso machines in Home Assistant.
 
-# Nespresso
+This custom integration is prepared for Home Assistant 2026.8.3 and requires Home Assistant 2026.8.0 or newer. It supports Bluetooth discovery, direct pairing, reuse of an existing authentication token, translated sensor states, brewing actions, and the capsule counter.
 
-Nespresso Bluetooth integration for Home Assistant.
+> [!WARNING]
+> Repeated Bluetooth pairing can permanently exhaust the machine's pairing-key storage. Testing indicates that failure can occur after roughly 25 new pairings; recovery then requires a JTAG programmer and manually erasing flash sectors. Reuse an existing authentication token whenever possible and avoid unnecessary pairing attempts or factory resets.
 
-Originally intended to be a fork of the work from tikismoke but has morphed significantly and the original work is no longer under development i've decided to create a new project home.
+## Installation with HACS
 
-Thank you to tikismoke and all those before him who helped reverse engineer the protocols.
+1. Open HACS in Home Assistant.
+2. Open the menu in the top-right corner and choose **Custom repositories**.
+3. Add `https://github.com/michelnet/ha_nespresso_integration` as an **Integration** repository.
+4. Find **Nespresso**, choose **Download**, and restart Home Assistant.
+5. Go to **Settings > Devices & services > Add integration**, search for **Nespresso**, and follow the setup flow.
 
-https://github.com/tikismoke/home-assistant-nespressoble
+The machine must be within Bluetooth range of a connectable Home Assistant Bluetooth adapter or proxy. You can either pair a factory-reset machine or supply a known authentication token.
 
-This project is still a work in progress
+### Manual installation
 
-# Features
-* Native configuration flow for Home Assistant
-* Device discovery
-* Direct pairing/auth (No need to extract auth_key from mobile app)
-* Option to reuse an exiting auth_key if you have one
-* Reworked to use the native Home Assistant bleak bluetooth library
+Copy `custom_components/nespresso` into the `custom_components` directory of your Home Assistant configuration, restart Home Assistant, and add the integration from **Settings > Devices & services**.
 
-# Requirements
-* The integration can either reuse an existing auth_key, if known. Or can begin a new paring process.
+## Actions
 
-WARNING: I discovered an oversight in the machines bluetooth programming that can lead to the machine falling into a state where it cannot be paired with any more devices. The number seems to be around 25 before the bluetooth module runs out of memory to store the pairing keys and will fail to operate correctly. The only way to restore the machine if this happens is to hook up a JTAG programmer and manually erase the flash sectors. Therefore, its preferable if you already know an existing auth key to reuse it for this integration.
+The integration provides `nespresso.coffee` and `nespresso.caps`. Use the device picker in Home Assistant's automation or script editor whenever possible.
 
-# Examples
-## Basic button
-![Basic Card](examples/Screenshot%202023-11-14%20233944.png)
+`device_id` remains optional for backward compatibility when exactly one Nespresso machine is configured. When multiple machines are configured, it is required so the action has an unambiguous target.
 
-A basic button card can directly call the service with the data provided if you only want a simple button option, or if you want a dashboard with various button options.
+### Brew a predefined drink
 
-```
-show_name: true
-show_icon: true
-type: button
-tap_action:
-  action: toggle
-entity: sensor.expert_milk_d1e1037c4a9d_always_1
-hold_action:
-  action: call-service
-  service: nespresso.coffee
-  target: {}
-  data:
-    brew_temp: Medium
-    brew_type: Lungo
-show_state: false
-icon: mdi:coffee
-name: Brew Americano
+Selector values are stable lowercase identifiers:
+
+```yaml
+action: nespresso.coffee
+data:
+  device_id: YOUR_NESPRESSO_DEVICE_ID
+  brew_type: lungo
+  brew_temp: medium
 ```
 
-## Selectable Options
-![Example Card](examples/Screenshot%202023-11-14%20232456.png)
+Available drink values are `ristretto`, `espresso`, `lungo`, `americano`, and `hot_water`. Available temperature values are `low`, `medium`, and `high`. Support for a drink or temperature depends on the machine model.
 
-Create two helpers for the dropdown lists with the values available in the machines.BrewType and machines.Temprature enums. Low or mixed case values on the dropdown for appearance. The text values will be converted up uppercase within the service call.
+### Brew a custom recipe
 
-![Helpers](examples/Screenshot%202023-11-14%20233208.png)
+Provide both `coffee_ml` and `water_ml`. Supplying only one custom volume is rejected.
 
-Add the following to your scripts.yaml to wrap the input selectors with the service call.
-
-**scripts.yaml**
-```
-brew_coffee:
-  sequence:
-    - service: nespresso.coffee
-      data:
-        brew_type: "{{ states('input_select.brew_type') }}"
-        brew_temp: "{{ states('input_select.brew_temp') }}"
-  alias: Brew Coffee
+```yaml
+action: nespresso.coffee
+data:
+  device_id: YOUR_NESPRESSO_DEVICE_ID
+  brew_temp: high
+  coffee_ml: 60
+  water_ml: 40
 ```
 
-Create the card.
+### Set the capsule counter
 
-```
-type: entities
-title: Coffee Maker Controls
-entities:
-  - entity: input_select.brew_type
-  - entity: input_select.brew_temp
-  - type: button
-    tap_action:
-      action: call-service
-      service: script.brew_coffee
-    name: Brew Coffee
+```yaml
+action: nespresso.caps
+data:
+  device_id: YOUR_NESPRESSO_DEVICE_ID
+  caps: 80
 ```
 
-## Custom recipes
-![Custom Recipes](examples/Screenshot%202023-11-15%20142912.png)
+The displayed counter is updated immediately after the machine accepts the command and is confirmed again during the next device poll.
 
-The service supports optional configuration parameters to allow you to create your own ideal recipe. When adding the call service to a button card you can define the quantity of coffee and water in mililiters to dispense.
+## State normalization in 0.2.0
 
-```
-show_name: true
-show_icon: true
-type: button
-tap_action:
-  action: call-service
-  service: nespresso.coffee
-  target: {}
-  data:
-    coffee_ml: 123
-    water_ml: 69
-    brew_temp: Medium
-entity: sensor.expert_milk_d1e1037c4a9d_always_1
-name: Custom Recipe
-icon_height: 50px
-show_state: false
-icon: mdi:coffee-outline
-```
+Machine states are now exposed as stable lowercase `snake_case` values, while Home Assistant translates their labels in the user interface. For example, the former display value `Heat Up` is now the automation-safe state `heat_up` and is shown as **Heating up**, **Aufheizen**, or another localized label.
 
-## Caps Counter
-![Caps Counter](examples/Screenshot%202023-11-18%20205241.png)
+Update automations and templates that compare old title-cased values. Always compare against the raw lowercase value, such as `ready`, `brewing`, `not_empty`, or `level_2`, rather than a translated label.
 
-Reading/writing the caps counter is supported. Be aware that the counter doesn't update until the next time the machine is polled for sensor data (every 5 minutes). 
+## Troubleshooting
 
-Example card
-```
-type: vertical-stack
-cards:
-  - show_state: true
-    show_name: false
-    camera_view: auto
-    type: picture-entity
-    entity: sensor.expert_milk_d1e1037c4a9d_caps_number
-    image: /local/NespressoCaps.png
-  - type: entities
-    entities:
-      - entity: input_number.caps_counter
-        name: Set New Counter Total
-      - type: call-service
-        name: Update Capsule Count
-        action_name: Set Counter
-        service: script.update_capsule_count
-    show_header_toggle: false
-```
+### The machine only brews once
 
-**scripts.yaml**
-```
-update_capsule_count:
-  alias: Update Capsule Count
-  sequence:
-    - service: nespresso.caps
-      data:
-        caps: "{{ states('input_number.caps_counter') }}"
-  mode: single
-```
+The lid or slider must be cycled between brew operations.
 
-# Troubleshooting
+### Pairing fails
 
-While working on this project I've observed some quirks with Home Assistant and Bluetooth. In an effort to help people resolve their own problems, here are the most common things i've come across.
+Confirm that the machine is in pairing mode and close enough to a connectable Bluetooth adapter. If pairing also fails with `bluetoothctl`, investigate the host Bluetooth adapter and driver. Avoid repeated pairing attempts because of the pairing-key storage warning above.
 
-1. **The machine only brews once**
+### The integration is configured but no entities appear
 
-This is an easy one. The lid must be cycled between brew events when controlled over bluetooth.
+The authentication token may not have been installed correctly. Remove the integration entry, verify the token or reset the machine once, and configure it again. Do not repeatedly pair the machine.
 
-2. **The pairing process fails**
+## Credits
 
-I've seen various combinations of systems and bluetooth dongles that seem to fail the standard bluetooth pairing. The easiest way to verify this on your system is to run bluetoothctl and manually attempt to pair. You should see the same error in the Home Assistant logs.
+This project builds on protocol research by [tikismoke](https://github.com/tikismoke/home-assistant-nespressoble) and other contributors. Additional reverse-engineering notes are available in [`reverse_engineering/README.md`](reverse_engineering/README.md).
 
-![bluetoothctl failing](examples/Screenshot%202023-11-15%20180414.png)
-
-Frustratingly, this issue may go away if you try the same dongle on a different system. I can only assume its a driver related issue.
-
-3. **The device is setup but there are no entities**
-
-Something went wrong when installing the new auth_key. Delete the device from Home Assistant, factory reset the machine and try again.
+This integration is an independent community project and is not affiliated with or endorsed by Nespresso.
