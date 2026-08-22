@@ -19,6 +19,7 @@ from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_ADDRESS, CONF_TOKEN
 from homeassistant.helpers import config_validation as cv
 
+from .auth import is_valid_auth_token, normalize_auth_token
 from .const import DOMAIN, NESPRESSO_SERVICE_UUID
 from .machines import supported
 from .nespresso import (
@@ -30,11 +31,25 @@ from .nespresso import (
 
 _LOGGER = logging.getLogger(__name__)
 
-AUTH_TOKEN_VALIDATOR = vol.All(
-    cv.string,
-    vol.Strip,
-    cv.matches_regex(r"^[0-9a-fA-F]{16}$"),
-)
+# Config-flow schemas are serialized and sent to the frontend. Keep this
+# validator limited to primitives supported by voluptuous-serialize, and do
+# format validation in the step handler below.
+AUTH_TOKEN_FIELD = vol.All(cv.string, vol.Strip)
+
+
+def _auth_code_from_input(
+    user_input: Mapping[str, Any], *, required: bool = False
+) -> tuple[str | None, dict[str, str]]:
+    """Normalize and validate an authentication token from a form."""
+
+    auth_code = normalize_auth_token(user_input.get(CONF_TOKEN))
+    if auth_code is None:
+        if required:
+            return None, {CONF_TOKEN: "invalid_token"}
+        return None, {}
+    if not is_valid_auth_token(auth_code):
+        return None, {CONF_TOKEN: "invalid_token"}
+    return auth_code, {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,7 +141,7 @@ class NespressoConfigFlow(ConfigFlow, domain=DOMAIN):
             marker = vol.Required(CONF_TOKEN)
         else:
             marker = vol.Optional(CONF_TOKEN)
-        return vol.Schema({marker: AUTH_TOKEN_VALIDATOR})
+        return vol.Schema({marker: AUTH_TOKEN_FIELD})
 
     @override
     async def async_step_bluetooth(
@@ -151,18 +166,20 @@ class NespressoConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            result, errors = await self._async_try_validate(
-                self._discovery_info.address, user_input.get(CONF_TOKEN)
-            )
-            if result is not None:
-                title, auth_code = result
-                return self.async_create_entry(
-                    title=title,
-                    data={
-                        CONF_ADDRESS: self._discovery_info.address,
-                        CONF_TOKEN: auth_code,
-                    },
+            auth_code, errors = _auth_code_from_input(user_input)
+            if not errors:
+                result, errors = await self._async_try_validate(
+                    self._discovery_info.address, auth_code
                 )
+                if result is not None:
+                    title, auth_code = result
+                    return self.async_create_entry(
+                        title=title,
+                        data={
+                            CONF_ADDRESS: self._discovery_info.address,
+                            CONF_TOKEN: auth_code,
+                        },
+                    )
 
         return self.async_show_form(
             step_id="bluetooth_confirm",
@@ -176,21 +193,23 @@ class NespressoConfigFlow(ConfigFlow, domain=DOMAIN):
         """Let the user select a discovered machine."""
         errors: dict[str, str] = {}
         if user_input is not None:
-            address: str = user_input[CONF_ADDRESS]
-            discovery = self._discovered_devices[address]
-            self._discovery_info = discovery.service_info
+            auth_code, errors = _auth_code_from_input(user_input)
+            if not errors:
+                address: str = user_input[CONF_ADDRESS]
+                discovery = self._discovered_devices[address]
+                self._discovery_info = discovery.service_info
 
-            await self.async_set_unique_id(address, raise_on_progress=False)
-            self._abort_if_unique_id_configured()
-            self.context["title_placeholders"] = {"name": discovery.title}
+                await self.async_set_unique_id(address, raise_on_progress=False)
+                self._abort_if_unique_id_configured()
+                self.context["title_placeholders"] = {"name": discovery.title}
 
-            result, errors = await self._async_try_validate(address, user_input.get(CONF_TOKEN))
-            if result is not None:
-                title, auth_code = result
-                return self.async_create_entry(
-                    title=title,
-                    data={CONF_ADDRESS: address, CONF_TOKEN: auth_code},
-                )
+                result, errors = await self._async_try_validate(address, auth_code)
+                if result is not None:
+                    title, auth_code = result
+                    return self.async_create_entry(
+                        title=title,
+                        data={CONF_ADDRESS: address, CONF_TOKEN: auth_code},
+                    )
 
         if not self._discovered_devices:
             await bluetooth.async_request_active_scan(self.hass)
@@ -219,7 +238,7 @@ class NespressoConfigFlow(ConfigFlow, domain=DOMAIN):
             data_schema=vol.Schema(
                 {
                     vol.Required(CONF_ADDRESS): vol.In(titles),
-                    vol.Optional(CONF_TOKEN): AUTH_TOKEN_VALIDATOR,
+                    vol.Optional(CONF_TOKEN): AUTH_TOKEN_FIELD,
                 }
             ),
             errors=errors,
@@ -241,16 +260,16 @@ class NespressoConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            result, errors = await self._async_try_validate(
-                self._reauth_address, user_input[CONF_TOKEN]
-            )
-            if result is not None:
-                title, auth_code = result
-                return self.async_update_reload_and_abort(
-                    self._get_reauth_entry(),
-                    title=title,
-                    data_updates={CONF_TOKEN: auth_code},
-                )
+            auth_code, errors = _auth_code_from_input(user_input, required=True)
+            if not errors:
+                result, errors = await self._async_try_validate(self._reauth_address, auth_code)
+                if result is not None:
+                    title, auth_code = result
+                    return self.async_update_reload_and_abort(
+                        self._get_reauth_entry(),
+                        title=title,
+                        data_updates={CONF_TOKEN: auth_code},
+                    )
 
         return self.async_show_form(
             step_id="reauth_confirm",

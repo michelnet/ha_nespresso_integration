@@ -180,6 +180,30 @@ class RepositoryMetadataTests(unittest.TestCase):
         minimum_version = tuple(int(part) for part in hacs["homeassistant"].split("."))
         self.assertGreaterEqual(minimum_version, (2026, 8, 0))
 
+    def test_config_flow_schemas_avoid_unserializable_regex_closures(self) -> None:
+        """Keep config-flow forms compatible with voluptuous-serialize."""
+
+        config_flow_path = COMPONENT_ROOT / "config_flow.py"
+        tree = ast.parse(
+            config_flow_path.read_text(encoding="utf-8"),
+            filename=str(config_flow_path),
+        )
+        regex_validators = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "cv"
+            and node.func.attr == "matches_regex"
+        ]
+
+        self.assertEqual(
+            regex_validators,
+            [],
+            "cv.matches_regex closures cannot be serialized in config-flow forms",
+        )
+
 
 class ServiceMetadataTests(unittest.TestCase):
     """Keep service selectors, translations, and client ranges aligned."""

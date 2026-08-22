@@ -11,6 +11,7 @@
       "cannot_connect": "Não foi possível estabelecer ligação à máquina.",
       "cannot_pair": "Não foi possível emparelhar com a máquina.",
       "invalid_auth": "O token de autenticação é inválido.",
+      "invalid_token": "O token de autenticação deve conter exatamente 16 carateres hexadecimais.",
       "unknown": "Ocorreu um erro inesperado."
     },
     "step": {

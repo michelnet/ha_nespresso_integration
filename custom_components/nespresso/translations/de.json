@@ -11,6 +11,7 @@
       "cannot_connect": "Die Verbindung zur Maschine ist fehlgeschlagen.",
       "cannot_pair": "Das Koppeln mit der Maschine ist fehlgeschlagen.",
       "invalid_auth": "Der Authentifizierungstoken ist ungültig.",
+      "invalid_token": "Der Authentifizierungstoken muss genau 16 Hexadezimalzeichen enthalten.",
       "unknown": "Ein unerwarteter Fehler ist aufgetreten."
     },
     "step": {

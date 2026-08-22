@@ -11,6 +11,7 @@
       "cannot_connect": "Failed to connect to the machine.",
       "cannot_pair": "Failed to pair with the machine.",
       "invalid_auth": "The authentication token is invalid.",
+      "invalid_token": "The authentication token must contain exactly 16 hexadecimal characters.",
       "unknown": "An unexpected error occurred."
     },
     "step": {

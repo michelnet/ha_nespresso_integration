@@ -11,6 +11,7 @@
       "cannot_connect": "Det gick inte att ansluta till maskinen.",
       "cannot_pair": "Det gick inte att parkoppla maskinen.",
       "invalid_auth": "Autentiseringstoken är ogiltig.",
+      "invalid_token": "Autentiseringstoken måste innehålla exakt 16 hexadecimala tecken.",
       "unknown": "Ett oväntat fel inträffade."
     },
     "step": {
