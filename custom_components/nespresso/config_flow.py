@@ -121,10 +121,10 @@ class NespressoConfigFlow(ConfigFlow, domain=DOMAIN):
         try:
             return await self._async_validate_device(address, auth_code), {}
         except NespressoAuthenticationError as err:
-            _LOGGER.debug("Nespresso authentication failed: %s", err)
+            _LOGGER.debug("Nespresso authentication failed: %s", err, exc_info=True)
             return None, {"base": "invalid_auth" if auth_code is not None else "cannot_pair"}
         except NespressoConnectionError as err:
-            _LOGGER.debug("Unable to connect to Nespresso device: %s", err)
+            _LOGGER.debug("Unable to connect to Nespresso device: %s", err, exc_info=True)
             return None, {"base": "cannot_connect"}
         except NespressoError as err:
             _LOGGER.debug("Unable to configure Nespresso device: %s", err)

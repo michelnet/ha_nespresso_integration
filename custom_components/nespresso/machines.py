@@ -186,8 +186,10 @@ def decode_pairing_key_state(byte_buffer: bytes | bytearray) -> str:
         raise ValueError("Pairing-key state must contain at least one byte")
 
     pairing_key_state = byte_buffer[0]
-    if pairing_key_state in (0, 1):
+    if pairing_key_state == 0:
         return "ABSENT"
+    if pairing_key_state == 1:
+        return "TEMPORARY"
     if pairing_key_state == 2:
         return "PRESENT"
     if pairing_key_state == 3:

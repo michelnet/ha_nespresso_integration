@@ -11,6 +11,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 import types
+from enum import IntEnum
 from pathlib import Path
 
 COMPONENT_ROOT = Path(__file__).resolve().parents[1] / "custom_components" / "nespresso"
@@ -53,6 +54,50 @@ def _install_bluetooth_stubs() -> None:
     bleak_device = types.ModuleType("bleak.backends.device")
     bleak_device.BLEDevice = BLEDevice
 
+    bleak_exc = types.ModuleType("bleak.exc")
+
+    class BleakError(Exception):
+        """Import-only stand-in for the base Bleak exception."""
+
+    class BleakGATTProtocolErrorCode(IntEnum):
+        """ATT error codes used by the client tests."""
+
+        READ_NOT_PERMITTED = 0x02
+        INSUFFICIENT_AUTHENTICATION = 0x05
+        INSUFFICIENT_AUTHORIZATION = 0x08
+        INSUFFICIENT_ENCRYPTION_KEY_SIZE = 0x0C
+        UNLIKELY_ERROR = 0x0E
+        INSUFFICIENT_ENCRYPTION = 0x0F
+
+    class BleakGATTProtocolError(BleakError):
+        """Import-only stand-in for Bleak 3's structured ATT exception."""
+
+        def __init__(self, error_code: int) -> None:
+            super().__init__(error_code)
+
+        @property
+        def code(self) -> BleakGATTProtocolErrorCode:
+            return BleakGATTProtocolErrorCode(self.args[0])
+
+    class BleakDBusError(BleakError):
+        """Import-only stand-in for Bleak's structured BlueZ exception."""
+
+        def __init__(self, dbus_error: str, error_body: list[object]) -> None:
+            super().__init__(dbus_error, *error_body)
+
+        @property
+        def dbus_error(self) -> str:
+            return self.args[0]
+
+        @property
+        def dbus_error_details(self) -> str | None:
+            return self.args[1] if len(self.args) > 1 else None
+
+    bleak_exc.BleakError = BleakError
+    bleak_exc.BleakDBusError = BleakDBusError
+    bleak_exc.BleakGATTProtocolError = BleakGATTProtocolError
+    bleak_exc.BleakGATTProtocolErrorCode = BleakGATTProtocolErrorCode
+
     bleak_retry_connector = types.ModuleType("bleak_retry_connector")
 
     async def establish_connection(*_args, **_kwargs):
@@ -64,6 +109,7 @@ def _install_bluetooth_stubs() -> None:
     sys.modules["bleak"] = bleak
     sys.modules["bleak.backends"] = bleak_backends
     sys.modules["bleak.backends.device"] = bleak_device
+    sys.modules["bleak.exc"] = bleak_exc
     sys.modules["bleak_retry_connector"] = bleak_retry_connector
 
 

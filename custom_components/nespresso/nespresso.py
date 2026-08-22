@@ -8,6 +8,7 @@ import secrets
 from datetime import datetime, timedelta
 
 from bleak.backends.device import BLEDevice
+from bleak.exc import BleakDBusError, BleakGATTProtocolError, BleakGATTProtocolErrorCode
 from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
 
 from . import commandResponse
@@ -33,6 +34,10 @@ class NespressoConnectionError(NespressoError):
     """A Bluetooth connection could not be established or used."""
 
 
+class _NespressoCredentialRejected(NespressoAuthenticationError):
+    """The machine explicitly rejected an otherwise well-formed credential."""
+
+
 CHAR_UUID_DEVICE_NAME = "00002a00-0000-1000-8000-00805f9b34fb"
 CHAR_UUID_STATE = "06aa3a12-f22a-11e3-9daa-0002a5d5c51b"
 CHAR_UUID_NBCAPS = "06aa3a15-f22a-11e3-9daa-0002a5d5c51b"
@@ -45,6 +50,33 @@ CHAR_UUID_CMDRESP = "06aa3a52-f22a-11e3-9daa-0002a5d5c51b"
 CHAR_UUID_SERIAL = "06aa3a31-f22a-11e3-9daa-0002a5d5c51b"
 CHAR_UUID_BREW = "06aa3a42-f22a-11e3-9daa-0002a5d5c51b"
 CHAR_UUID_INFO = "06aa3a21-f22a-11e3-9daa-0002a5d5c51b"
+
+PAIRING_SETTLE_SECONDS = 2.0
+ONBOARDING_SETTLE_SECONDS = 2.0
+PAIRING_STATE_POLL_SECONDS = 0.5
+PAIRING_STATE_MAX_ATTEMPTS = 5
+
+_LINK_SECURITY_ERRORS = frozenset(
+    {
+        BleakGATTProtocolErrorCode.INSUFFICIENT_AUTHENTICATION,
+        BleakGATTProtocolErrorCode.INSUFFICIENT_AUTHORIZATION,
+        BleakGATTProtocolErrorCode.INSUFFICIENT_ENCRYPTION_KEY_SIZE,
+        BleakGATTProtocolErrorCode.INSUFFICIENT_ENCRYPTION,
+    }
+)
+
+
+def _is_link_security_error(err: Exception) -> bool:
+    """Return whether an operation failed because the BLE link is not secured."""
+
+    if isinstance(err, BleakGATTProtocolError):
+        return err.code in _LINK_SECURITY_ERRORS
+    return bool(
+        isinstance(err, BleakDBusError)
+        and err.dbus_error == "org.bluez.Error.NotPermitted"
+        and "not paired" in (err.dbus_error_details or "").casefold()
+    )
+
 
 sensors_characteristics = (
     CHAR_UUID_STATE,
@@ -93,6 +125,7 @@ class NespressoClient:
         self._prefetched_sensor_data: dict[str, bytes | bytearray] = {}
         self._command_response_event = asyncio.Event()
         self._command_response_error: Exception | None = None
+        self._security_pair_attempted = False
 
     @property
     def isOnboard(self) -> bool | None:
@@ -118,6 +151,7 @@ class NespressoClient:
         device_address = getattr(device, "address", None)
         device_name = getattr(device, "name", None) or device_address or "Nespresso"
         self._prefetched_sensor_data.clear()
+        self._security_pair_attempted = False
 
         try:
             client = await establish_connection(
@@ -137,51 +171,57 @@ class NespressoClient:
                     f"Nespresso device {device_name} disconnected during setup"
                 )
 
-            if self.is_onboard is None:
+            if self.auth_code is not None:
+                # A saved CMID is authoritative. Try it before inspecting or
+                # changing the machine's onboarding state: the status read can
+                # briefly report NONE/TEMPORARY, while the saved key is still
+                # accepted. Most importantly, never replace a supplied key.
                 try:
-                    await client.pair()
-                    self.is_onboard = await self.get_onboard_status(client)
-                except Exception as err:
-                    raise NespressoConnectionError(
-                        f"Failed to determine onboarding state for {device_name}"
-                    ) from err
-
-            if not self.is_onboard:
-                self.auth_code = self.generate_auth_key()
-                try:
-                    await self.onboard(client)
-                    self.is_onboard = await self.get_onboard_status(client)
-                except NespressoAuthenticationError:
-                    raise
-                except Exception as err:
+                    protected_state = await self._authenticate_with_security_retry(
+                        client, device_name
+                    )
+                except _NespressoCredentialRejected:
+                    pairing_key_state = await self._stable_pairing_key_state(
+                        client, device_name, confirm_absent=True
+                    )
+                    # Give a valid key a complete second, non-mutating attempt
+                    # before any onboarding write. This protects the machine's
+                    # limited CMID storage from a delayed protected-read result.
+                    await asyncio.sleep(PAIRING_STATE_POLL_SECONDS)
+                    try:
+                        protected_state = await self._authenticate_with_security_retry(
+                            client, device_name
+                        )
+                    except _NespressoCredentialRejected as err:
+                        if pairing_key_state == "PRESENT":
+                            raise NespressoAuthenticationError(
+                                f"Nespresso device {device_name} rejected the auth code"
+                            ) from err
+                        # The state can change while the second CMID attempt is
+                        # in flight. Reconfirm NONE immediately before the only
+                        # mutating fallback so a late FINAL never consumes a
+                        # second slot in the machine's limited CMID storage.
+                        pairing_key_state = await self._stable_pairing_key_state(
+                            client, device_name, confirm_absent=True
+                        )
+                        if pairing_key_state == "PRESENT":
+                            raise NespressoAuthenticationError(
+                                f"Nespresso device {device_name} rejected the auth code"
+                            ) from err
+                        protected_state = await self._onboard_and_authenticate(client, device_name)
+                self.is_onboard = True
+            else:
+                pairing_key_state = await self._stable_pairing_key_state(
+                    client, device_name, confirm_absent=True
+                )
+                if pairing_key_state == "PRESENT":
                     raise NespressoAuthenticationError(
-                        f"Failed to onboard Nespresso device {device_name}"
-                    ) from err
-
-                if not self.is_onboard:
-                    raise NespressoAuthenticationError(
-                        f"Nespresso device {device_name} did not accept onboarding"
+                        f"Nespresso device {device_name} is onboarded but has no auth code"
                     )
 
-            if not self.auth_code:
-                raise NespressoAuthenticationError(
-                    f"Nespresso device {device_name} is onboarded but has no auth code"
-                )
+                self.auth_code = self.generate_auth_key()
+                protected_state = await self._onboard_and_authenticate(client, device_name)
 
-            try:
-                await self.auth(client)
-                protected_state = await client.read_gatt_char(CHAR_UUID_STATE)
-            except NespressoAuthenticationError:
-                raise
-            except Exception as err:
-                raise NespressoAuthenticationError(
-                    f"Authentication failed for Nespresso device {device_name}"
-                ) from err
-
-            if not protected_state:
-                raise NespressoAuthenticationError(
-                    f"Authentication failed for Nespresso device {device_name}"
-                )
             # Reuse the protected state read as the state sensor value. This
             # verifies authentication without reading the same characteristic
             # a second time during the immediately following coordinator poll.
@@ -298,6 +338,13 @@ class NespressoClient:
     async def get_onboard_status(self, client: BleakClientWithServiceCache) -> bool:
         """Read and remember whether a pairing key is present."""
 
+        pairing_key_state = await self.get_pairing_key_state(client)
+        self.is_onboard = pairing_key_state == "PRESENT"
+        return self.is_onboard
+
+    async def get_pairing_key_state(self, client: BleakClientWithServiceCache) -> str:
+        """Read the complete pairing-key state reported by the machine."""
+
         onboard_status = await client.read_gatt_char(CHAR_UUID_ONBOARD_STATUS)
         if not onboard_status:
             raise NespressoConnectionError("The machine returned no onboarding state")
@@ -311,8 +358,229 @@ class NespressoClient:
         if pairing_key_state == "UNDEFINED":
             raise NespressoConnectionError("The machine returned an undefined onboarding state")
 
-        self.is_onboard = pairing_key_state == "PRESENT"
-        return self.is_onboard
+        return pairing_key_state
+
+    async def _pair_for_link_security(
+        self, client: BleakClientWithServiceCache, device_name: str
+    ) -> None:
+        """Use OS pairing once as a fallback for machines requiring encryption."""
+
+        if self._security_pair_attempted:
+            return
+
+        self._security_pair_attempted = True
+        try:
+            await client.pair()
+            await asyncio.sleep(PAIRING_SETTLE_SECONDS)
+        except Exception as err:
+            raise NespressoConnectionError(
+                f"Failed to establish a secure Bluetooth link to {device_name}"
+            ) from err
+
+    async def _pairing_key_state_with_security_retry(
+        self, client: BleakClientWithServiceCache, device_name: str
+    ) -> str:
+        """Read pairing state, retrying once after link-security negotiation."""
+
+        try:
+            return await self.get_pairing_key_state(client)
+        except NespressoConnectionError:
+            raise
+        except Exception as err:
+            if _is_link_security_error(err) and not self._security_pair_attempted:
+                await self._pair_for_link_security(client, device_name)
+                try:
+                    return await self.get_pairing_key_state(client)
+                except NespressoConnectionError:
+                    raise
+                except Exception as retry_err:
+                    raise NespressoConnectionError(
+                        f"Failed to read onboarding state from {device_name}"
+                    ) from retry_err
+            raise NespressoConnectionError(
+                f"Failed to read onboarding state from {device_name}"
+            ) from err
+
+    async def _stable_pairing_key_state(
+        self,
+        client: BleakClientWithServiceCache,
+        device_name: str,
+        *,
+        confirm_absent: bool,
+    ) -> str:
+        """Wait for a non-temporary state and optionally confirm NONE twice."""
+
+        pairing_key_state = await self._pairing_key_state_with_security_retry(client, device_name)
+        attempts_remaining = PAIRING_STATE_MAX_ATTEMPTS
+        absent_reads = 0
+
+        while True:
+            if pairing_key_state == "PRESENT":
+                return pairing_key_state
+            if pairing_key_state == "ABSENT":
+                absent_reads += 1
+                if not confirm_absent or absent_reads >= 2:
+                    return pairing_key_state
+            else:
+                absent_reads = 0
+
+            if attempts_remaining == 0:
+                raise NespressoConnectionError(
+                    f"Nespresso device {device_name} remained in a temporary onboarding state"
+                )
+            attempts_remaining -= 1
+            await asyncio.sleep(PAIRING_STATE_POLL_SECONDS)
+            pairing_key_state = await self._pairing_key_state_with_security_retry(
+                client, device_name
+            )
+
+    async def _wait_for_onboarding(
+        self, client: BleakClientWithServiceCache, device_name: str
+    ) -> None:
+        """Wait until a newly written pairing key becomes permanent."""
+
+        await asyncio.sleep(ONBOARDING_SETTLE_SECONDS)
+        for attempt in range(PAIRING_STATE_MAX_ATTEMPTS):
+            pairing_key_state = await self._pairing_key_state_with_security_retry(
+                client, device_name
+            )
+            if pairing_key_state == "PRESENT":
+                self.is_onboard = True
+                return
+            if attempt + 1 < PAIRING_STATE_MAX_ATTEMPTS:
+                await asyncio.sleep(PAIRING_STATE_POLL_SECONDS)
+
+        raise NespressoAuthenticationError(
+            f"Nespresso device {device_name} did not accept onboarding"
+        )
+
+    async def _authenticate_once(
+        self, client: BleakClientWithServiceCache, device_name: str
+    ) -> bytes | bytearray:
+        """Write the CMID and verify it with one protected read."""
+
+        try:
+            await self.auth(client)
+        except BleakGATTProtocolError as err:
+            if err.code == BleakGATTProtocolErrorCode.UNLIKELY_ERROR:
+                raise _NespressoCredentialRejected(
+                    f"Nespresso device {device_name} rejected the auth-code write"
+                ) from err
+            raise
+
+        try:
+            protected_state = await client.read_gatt_char(CHAR_UUID_STATE)
+        except BleakGATTProtocolError as err:
+            if err.code == BleakGATTProtocolErrorCode.READ_NOT_PERMITTED:
+                raise _NespressoCredentialRejected(
+                    f"Nespresso device {device_name} rejected the auth code"
+                ) from err
+            raise
+
+        if not protected_state:
+            raise NespressoConnectionError(
+                f"Nespresso device {device_name} returned no protected state"
+            )
+        return protected_state
+
+    async def _authenticate_with_security_retry(
+        self, client: BleakClientWithServiceCache, device_name: str
+    ) -> bytes | bytearray:
+        """Authenticate, using OS pairing only after a link-security error."""
+
+        try:
+            return await self._authenticate_once(client, device_name)
+        except _NespressoCredentialRejected:
+            raise
+        except NespressoAuthenticationError:
+            raise
+        except NespressoConnectionError:
+            raise
+        except Exception as err:
+            if _is_link_security_error(err) and not self._security_pair_attempted:
+                await self._pair_for_link_security(client, device_name)
+                try:
+                    return await self._authenticate_once(client, device_name)
+                except _NespressoCredentialRejected:
+                    raise
+                except NespressoAuthenticationError:
+                    raise
+                except NespressoConnectionError:
+                    raise
+                except Exception as retry_err:
+                    raise NespressoConnectionError(
+                        f"Bluetooth authentication transport failed for {device_name}"
+                    ) from retry_err
+            raise NespressoConnectionError(
+                f"Bluetooth authentication transport failed for {device_name}"
+            ) from err
+
+    async def _onboard_with_security_retry(
+        self, client: BleakClientWithServiceCache, device_name: str
+    ) -> None:
+        """Install the selected CMID, retrying only for link-security errors."""
+
+        auth_bytes = self._auth_bytes(self.auth_code)
+        for attempt in range(2):
+            try:
+                await client.write_gatt_char(CHAR_UUID_PAIR, bytearray([1]), response=True)
+            except Exception as err:
+                if (
+                    attempt == 0
+                    and _is_link_security_error(err)
+                    and not self._security_pair_attempted
+                ):
+                    await self._pair_for_link_security(client, device_name)
+                    continue
+                raise NespressoConnectionError(
+                    f"Failed to set pairing power for {device_name}"
+                ) from err
+
+            try:
+                await client.write_gatt_char(CHAR_UUID_AUTH, auth_bytes, response=True)
+            except BleakGATTProtocolError as err:
+                if err.code == BleakGATTProtocolErrorCode.UNLIKELY_ERROR:
+                    raise NespressoAuthenticationError(
+                        f"Nespresso device {device_name} rejected onboarding"
+                    ) from err
+                if (
+                    attempt == 0
+                    and _is_link_security_error(err)
+                    and not self._security_pair_attempted
+                ):
+                    await self._pair_for_link_security(client, device_name)
+                    continue
+                raise NespressoConnectionError(
+                    f"Bluetooth onboarding transport failed for {device_name}"
+                ) from err
+            except Exception as err:
+                if (
+                    attempt == 0
+                    and _is_link_security_error(err)
+                    and not self._security_pair_attempted
+                ):
+                    await self._pair_for_link_security(client, device_name)
+                    continue
+                raise NespressoConnectionError(
+                    f"Bluetooth onboarding transport failed for {device_name}"
+                ) from err
+            return
+
+        raise NespressoConnectionError(f"Bluetooth onboarding transport failed for {device_name}")
+
+    async def _onboard_and_authenticate(
+        self, client: BleakClientWithServiceCache, device_name: str
+    ) -> bytes | bytearray:
+        """Install the current CMID, wait for FINAL, and authenticate it."""
+
+        await self._onboard_with_security_retry(client, device_name)
+        await self._wait_for_onboarding(client, device_name)
+        try:
+            return await self._authenticate_with_security_retry(client, device_name)
+        except _NespressoCredentialRejected as err:
+            raise NespressoAuthenticationError(
+                f"Nespresso device {device_name} rejected the onboarded auth code"
+            ) from err
 
     async def load_model(self) -> CoffeeMachine:
         """Read the model name and serial number."""
@@ -346,7 +614,7 @@ class NespressoClient:
         )
 
     async def onboard(self, client: BleakClientWithServiceCache) -> None:
-        """Install a newly generated authentication key on the machine."""
+        """Install the selected authentication key on the machine."""
 
         auth_bytes = self._auth_bytes(self.auth_code)
         await client.write_gatt_char(CHAR_UUID_PAIR, bytearray([1]), response=True)

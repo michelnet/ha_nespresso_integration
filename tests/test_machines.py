@@ -84,7 +84,7 @@ class MachineInformationTests(unittest.TestCase):
             machines.decode_machine_information(payload[:13])
 
     def test_pairing_key_states(self) -> None:
-        expected = {0: "ABSENT", 1: "ABSENT", 2: "PRESENT", 3: "UNDEFINED"}
+        expected = {0: "ABSENT", 1: "TEMPORARY", 2: "PRESENT", 3: "UNDEFINED"}
 
         for raw_value, state in expected.items():
             with self.subTest(raw_value=raw_value):
