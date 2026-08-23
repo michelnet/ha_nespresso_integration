@@ -124,6 +124,12 @@ class NespressoConfigFlow(ConfigFlow, domain=DOMAIN):
             _LOGGER.debug("Nespresso authentication failed: %s", err, exc_info=True)
             return None, {"base": "invalid_auth" if auth_code is not None else "cannot_pair"}
         except NespressoConnectionError as err:
+            cause = err.__cause__
+            _LOGGER.warning(
+                "Nespresso setup failed (%s): %s",
+                type(cause).__name__ if cause is not None else type(err).__name__,
+                err,
+            )
             _LOGGER.debug("Unable to connect to Nespresso device: %s", err, exc_info=True)
             return None, {"base": "cannot_connect"}
         except NespressoError as err:
