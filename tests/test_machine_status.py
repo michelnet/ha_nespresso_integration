@@ -13,7 +13,7 @@ class MachineStatusTests(unittest.TestCase):
     """Verify decoding of the packed machine status characteristic."""
 
     def test_decode_known_status_payload(self) -> None:
-        raw_data = bytes.fromhex("55 a2 00 00 00 00 01 02 03")
+        raw_data = bytes.fromhex("55 a2 00 00 00 00 01 02")
 
         decoded = machine_status.MachineStatus(raw_data).decode()
 
@@ -25,8 +25,31 @@ class MachineStatusTests(unittest.TestCase):
                 "capsule_mechanism_jammed": "JAMMED",
                 "water_fresh": "NOT_FRESH",
                 "state": "READY",
-                "descaling_counter": 0x010203,
+                "descaling_counter": 0x0102,
             },
+        )
+
+    def test_decode_expert_capture_status_payload(self) -> None:
+        raw_data = bytes.fromhex("50 49 7f e0 80 00 ff ff")
+
+        self.assertEqual(
+            machine_status.MachineStatus(raw_data).decode(),
+            {
+                "water_is_empty": "NOT_EMPTY",
+                "descaling_needed": "NOT_NEEDED",
+                "capsule_mechanism_jammed": "JAMMED",
+                "water_fresh": "FRESH",
+                "state": "POWER_SAVE",
+                "descaling_counter": 0xFFFF,
+            },
+        )
+
+    def test_trailing_status_byte_does_not_extend_the_counter(self) -> None:
+        raw_data = bytes.fromhex("55 a2 00 00 00 00 01 02")
+
+        self.assertEqual(
+            machine_status.MachineStatus(raw_data).decode(),
+            machine_status.MachineStatus(raw_data + b"\x03").decode(),
         )
 
     def test_select_bits_uses_network_bit_order(self) -> None:
@@ -37,8 +60,9 @@ class MachineStatusTests(unittest.TestCase):
         self.assertEqual(status.select_bits(12, 4), 0xC)
 
     def test_invalid_buffer_and_bit_ranges_are_rejected(self) -> None:
-        with self.assertRaises(ValueError):
-            machine_status.MachineStatus(b"\x00" * 8).decode()
+        for length in range(8):
+            with self.subTest(length=length), self.assertRaises(ValueError):
+                machine_status.MachineStatus(b"\x00" * length).decode()
 
         status = machine_status.MachineStatus(b"\x00\x00")
         for start_bit, length in ((-1, 1), (0, 0), (15, 2)):

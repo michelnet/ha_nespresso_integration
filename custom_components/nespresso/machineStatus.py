@@ -46,9 +46,9 @@ class MachineStatus:
         return WaterIsFresh(self.raw_data[1] & 1)
 
     def decode(self) -> dict[str, str | int]:
-        if len(self.raw_data) < 9:
+        if len(self.raw_data) < 8:
             raise ValueError(
-                f"Machine status must contain at least 9 bytes, got {len(self.raw_data)}"
+                f"Machine status must contain at least 8 bytes, got {len(self.raw_data)}"
             )
         return {
             "water_is_empty": self.decode_water_is_empty().name,
@@ -56,7 +56,7 @@ class MachineStatus:
             "capsule_mechanism_jammed": self.decode_capsule_mechanism_jammed().name,
             "water_fresh": self.decode_water_fresh().name,
             "state": MachineState(self.select_bits(12, 4)).name,
-            "descaling_counter": int.from_bytes(self.raw_data[6:9], byteorder="big"),
+            "descaling_counter": int.from_bytes(self.raw_data[6:8], byteorder="big"),
         }
 
 

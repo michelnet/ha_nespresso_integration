@@ -710,7 +710,7 @@ class ClientSensorSnapshotTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_authentication_state_read_is_reused_by_the_snapshot(self) -> None:
         address = "AA:BB:CC:DD:EE:FF"
-        status = bytes.fromhex("00 02 00 00 00 00 00 00 01")
+        status = bytes.fromhex("00 02 00 00 00 00 01 02")
         connection = SimpleNamespace(
             is_connected=True,
             read_gatt_char=AsyncMock(),
@@ -723,6 +723,7 @@ class ClientSensorSnapshotTests(unittest.IsolatedAsyncioTestCase):
         snapshot = await client.get_sensor_data()
 
         self.assertEqual(snapshot[address]["state"], "READY")
+        self.assertEqual(snapshot[address]["descaling_counter"], 0x0102)
         connection.read_gatt_char.assert_not_awaited()
 
     async def test_failed_snapshot_does_not_replace_cached_data(self) -> None:
