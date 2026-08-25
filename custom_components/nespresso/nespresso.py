@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import binascii
 import secrets
+from collections.abc import Iterator
 from datetime import datetime, timedelta
 
 from bleak.backends.device import BLEDevice
@@ -66,15 +67,62 @@ _LINK_SECURITY_ERRORS = frozenset(
 )
 
 
+def _iter_exception_chain(err: BaseException) -> Iterator[BaseException]:
+    """Yield an exception and each distinct explicit or implicit cause."""
+
+    pending: list[BaseException] = [err]
+    seen: set[int] = set()
+
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        yield current
+
+        if current.__cause__ is not None:
+            pending.append(current.__cause__)
+        if current.__context__ is not None:
+            pending.append(current.__context__)
+
+
+def _att_error_code(err: Exception) -> BleakGATTProtocolErrorCode | None:
+    """Return a structured ATT code from local or ESPHome Bleak errors."""
+
+    for current in _iter_exception_chain(err):
+        if isinstance(current, BleakGATTProtocolError):
+            try:
+                return current.code
+            except TypeError, ValueError:
+                continue
+
+        if type(current).__name__ == "BluetoothGATTAPIError":
+            # bleak-esphome exposes aioesphomeapi GATT failures as a generic
+            # BleakError while preserving this structured API error as its
+            # cause. Do not parse the human-readable exception text.
+            gatt_error = getattr(current, "error", None)
+            error_code = getattr(gatt_error, "error", None)
+            try:
+                return BleakGATTProtocolErrorCode(error_code)
+            except TypeError, ValueError:
+                continue
+
+    return None
+
+
 def _is_link_security_error(err: Exception) -> bool:
     """Return whether an operation failed because the BLE link is not secured."""
 
-    if isinstance(err, BleakGATTProtocolError):
-        return err.code in _LINK_SECURITY_ERRORS
-    return bool(
-        isinstance(err, BleakDBusError)
-        and err.dbus_error == "org.bluez.Error.NotPermitted"
-        and "not paired" in (err.dbus_error_details or "").casefold()
+    if _att_error_code(err) in _LINK_SECURITY_ERRORS:
+        return True
+
+    return any(
+        (
+            isinstance(current, BleakDBusError)
+            and current.dbus_error == "org.bluez.Error.NotPermitted"
+            and "not paired" in (current.dbus_error_details or "").casefold()
+        )
+        for current in _iter_exception_chain(err)
     )
 
 
@@ -461,8 +509,8 @@ class NespressoClient:
 
         try:
             await self.auth(client)
-        except BleakGATTProtocolError as err:
-            if err.code == BleakGATTProtocolErrorCode.UNLIKELY_ERROR:
+        except Exception as err:
+            if _att_error_code(err) == BleakGATTProtocolErrorCode.UNLIKELY_ERROR:
                 raise _NespressoCredentialRejected(
                     f"Nespresso device {device_name} rejected the auth-code write"
                 ) from err
@@ -470,8 +518,8 @@ class NespressoClient:
 
         try:
             protected_state = await client.read_gatt_char(CHAR_UUID_STATE)
-        except BleakGATTProtocolError as err:
-            if err.code == BleakGATTProtocolErrorCode.READ_NOT_PERMITTED:
+        except Exception as err:
+            if _att_error_code(err) == BleakGATTProtocolErrorCode.READ_NOT_PERMITTED:
                 raise _NespressoCredentialRejected(
                     f"Nespresso device {device_name} rejected the auth code"
                 ) from err
@@ -538,22 +586,11 @@ class NespressoClient:
 
             try:
                 await client.write_gatt_char(CHAR_UUID_AUTH, auth_bytes, response=True)
-            except BleakGATTProtocolError as err:
-                if err.code == BleakGATTProtocolErrorCode.UNLIKELY_ERROR:
+            except Exception as err:
+                if _att_error_code(err) == BleakGATTProtocolErrorCode.UNLIKELY_ERROR:
                     raise NespressoAuthenticationError(
                         f"Nespresso device {device_name} rejected onboarding"
                     ) from err
-                if (
-                    attempt == 0
-                    and _is_link_security_error(err)
-                    and not self._security_pair_attempted
-                ):
-                    await self._pair_for_link_security(client, device_name)
-                    continue
-                raise NespressoConnectionError(
-                    f"Bluetooth onboarding transport failed for {device_name}"
-                ) from err
-            except Exception as err:
                 if (
                     attempt == 0
                     and _is_link_security_error(err)

@@ -15,6 +15,22 @@ nespresso = load_component_module("nespresso")
 VALID_STATE = bytes.fromhex("00 02 00 00 00 00 00 00 01")
 
 
+class BluetoothGATTAPIError(Exception):
+    """Test double for the structured error hidden by bleak-esphome."""
+
+    def __init__(self, error_code: int) -> None:
+        super().__init__(f"Bluetooth GATT error={error_code}")
+        self.error = SimpleNamespace(error=error_code, handle=65, address=0)
+
+
+def esphome_proxy_error(error_code: int) -> Exception:
+    """Wrap a structured ESPHome GATT error like bleak-esphome does."""
+
+    outer_error = Exception(f"Bluetooth GATT Error handle=65 error={error_code} description=test")
+    outer_error.__cause__ = BluetoothGATTAPIError(error_code)
+    return outer_error
+
+
 class ClientLifecycleTests(unittest.IsolatedAsyncioTestCase):
     """Verify connection cleanup and error behavior."""
 
@@ -400,6 +416,104 @@ class ClientLifecycleTests(unittest.IsolatedAsyncioTestCase):
                     ],
                 )
 
+    async def test_esphome_link_security_error_pairs_then_retries_the_token(self) -> None:
+        address = "AA:BB:CC:DD:EE:FF"
+        device = SimpleNamespace(address=address, name="Expert_1234")
+        auth_code = "0123456789abcdef"
+        auth_bytes = bytes.fromhex(auth_code)
+
+        proxy_error = esphome_proxy_error(
+            nespresso.BleakGATTProtocolErrorCode.INSUFFICIENT_AUTHENTICATION
+        )
+        connection = SimpleNamespace(
+            address=address,
+            is_connected=True,
+            pair=AsyncMock(),
+            read_gatt_char=AsyncMock(return_value=VALID_STATE),
+            write_gatt_char=AsyncMock(side_effect=(proxy_error, None)),
+            disconnect=AsyncMock(),
+        )
+        client = nespresso.NespressoClient(auth_code=auth_code, mac=address)
+
+        with (
+            patch.object(nespresso, "establish_connection", AsyncMock(return_value=connection)),
+            patch.object(nespresso.asyncio, "sleep", AsyncMock()) as sleep,
+        ):
+            await client.connect(device)
+
+        connection.pair.assert_awaited_once_with()
+        sleep.assert_awaited_once_with(nespresso.PAIRING_SETTLE_SECONDS)
+        self.assertEqual(client.auth_code, auth_code)
+        self.assertEqual(
+            connection.write_gatt_char.await_args_list,
+            [
+                call(nespresso.CHAR_UUID_AUTH, auth_bytes, response=True),
+                call(nespresso.CHAR_UUID_AUTH, auth_bytes, response=True),
+            ],
+        )
+        connection.read_gatt_char.assert_awaited_once_with(nespresso.CHAR_UUID_STATE)
+
+    async def test_esphome_non_security_error_does_not_trigger_pairing(self) -> None:
+        address = "AA:BB:CC:DD:EE:FF"
+        device = SimpleNamespace(address=address, name="Expert_1234")
+
+        for error_source, write_error in (
+            ("att", nespresso.BleakGATTProtocolError(133)),
+            ("esphome", esphome_proxy_error(133)),
+        ):
+            with self.subTest(error_source=error_source):
+                connection = SimpleNamespace(
+                    address=address,
+                    is_connected=True,
+                    pair=AsyncMock(),
+                    read_gatt_char=AsyncMock(),
+                    write_gatt_char=AsyncMock(side_effect=write_error),
+                    disconnect=AsyncMock(),
+                )
+                client = nespresso.NespressoClient(auth_code="0123456789abcdef", mac=address)
+
+                with (
+                    patch.object(
+                        nespresso, "establish_connection", AsyncMock(return_value=connection)
+                    ),
+                    self.assertRaises(nespresso.NespressoConnectionError),
+                ):
+                    await client.connect(device)
+
+                connection.pair.assert_not_awaited()
+                connection.read_gatt_char.assert_not_awaited()
+                connection.disconnect.assert_awaited_once_with()
+
+    async def test_esphome_pairing_capability_failure_is_a_connection_error(self) -> None:
+        address = "AA:BB:CC:DD:EE:FF"
+        device = SimpleNamespace(address=address, name="Expert_1234")
+        proxy_error = esphome_proxy_error(
+            nespresso.BleakGATTProtocolErrorCode.INSUFFICIENT_AUTHENTICATION
+        )
+        pairing_error = NotImplementedError("Pairing requires newer ESPHome firmware")
+        connection = SimpleNamespace(
+            address=address,
+            is_connected=True,
+            pair=AsyncMock(side_effect=pairing_error),
+            read_gatt_char=AsyncMock(),
+            write_gatt_char=AsyncMock(side_effect=proxy_error),
+            disconnect=AsyncMock(),
+        )
+        auth_code = "0123456789abcdef"
+        client = nespresso.NespressoClient(auth_code=auth_code, mac=address)
+
+        with (
+            patch.object(nespresso, "establish_connection", AsyncMock(return_value=connection)),
+            self.assertRaises(nespresso.NespressoConnectionError) as raised,
+        ):
+            await client.connect(device)
+
+        self.assertIs(raised.exception.__cause__, pairing_error)
+        self.assertEqual(client.auth_code, auth_code)
+        connection.pair.assert_awaited_once_with()
+        connection.read_gatt_char.assert_not_awaited()
+        connection.disconnect.assert_awaited_once_with()
+
     async def test_repeated_link_security_error_is_a_connection_error(self) -> None:
         address = "AA:BB:CC:DD:EE:FF"
         device = SimpleNamespace(address=address, name="Expert_1234")
@@ -432,59 +546,76 @@ class ClientLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_explicit_final_state_rejection_is_an_auth_error(self) -> None:
         address = "AA:BB:CC:DD:EE:FF"
         device = SimpleNamespace(address=address, name="Expert_1234")
-        rejected = nespresso.BleakGATTProtocolError(
-            nespresso.BleakGATTProtocolErrorCode.UNLIKELY_ERROR
-        )
-        connection = SimpleNamespace(
-            address=address,
-            is_connected=True,
-            pair=AsyncMock(),
-            read_gatt_char=AsyncMock(return_value=b"\x02"),
-            write_gatt_char=AsyncMock(side_effect=(rejected, rejected)),
-            disconnect=AsyncMock(),
-        )
-        client = nespresso.NespressoClient(auth_code="0123456789abcdef", mac=address)
+        error_code = nespresso.BleakGATTProtocolErrorCode.UNLIKELY_ERROR
 
-        with (
-            patch.object(nespresso, "establish_connection", AsyncMock(return_value=connection)),
-            patch.object(nespresso.asyncio, "sleep", AsyncMock()) as sleep,
-            self.assertRaises(nespresso.NespressoAuthenticationError),
+        for error_source, rejections in (
+            (
+                "att",
+                tuple(nespresso.BleakGATTProtocolError(error_code) for _ in range(2)),
+            ),
+            ("esphome", tuple(esphome_proxy_error(error_code) for _ in range(2))),
         ):
-            await client.connect(device)
+            with self.subTest(error_source=error_source):
+                connection = SimpleNamespace(
+                    address=address,
+                    is_connected=True,
+                    pair=AsyncMock(),
+                    read_gatt_char=AsyncMock(return_value=b"\x02"),
+                    write_gatt_char=AsyncMock(side_effect=rejections),
+                    disconnect=AsyncMock(),
+                )
+                client = nespresso.NespressoClient(auth_code="0123456789abcdef", mac=address)
 
-        connection.pair.assert_not_awaited()
-        sleep.assert_awaited_once_with(nespresso.PAIRING_STATE_POLL_SECONDS)
-        connection.disconnect.assert_awaited_once_with()
+                with (
+                    patch.object(
+                        nespresso, "establish_connection", AsyncMock(return_value=connection)
+                    ),
+                    patch.object(nespresso.asyncio, "sleep", AsyncMock()) as sleep,
+                    self.assertRaises(nespresso.NespressoAuthenticationError),
+                ):
+                    await client.connect(device)
+
+                connection.pair.assert_not_awaited()
+                sleep.assert_awaited_once_with(nespresso.PAIRING_STATE_POLL_SECONDS)
+                connection.disconnect.assert_awaited_once_with()
 
     async def test_protected_read_rejection_is_an_auth_error(self) -> None:
         address = "AA:BB:CC:DD:EE:FF"
         device = SimpleNamespace(address=address, name="Expert_1234")
-        read_rejections = tuple(
-            nespresso.BleakGATTProtocolError(
-                nespresso.BleakGATTProtocolErrorCode.READ_NOT_PERMITTED
-            )
-            for _ in range(2)
-        )
-        connection = SimpleNamespace(
-            address=address,
-            is_connected=True,
-            pair=AsyncMock(),
-            read_gatt_char=AsyncMock(side_effect=(read_rejections[0], b"\x02", read_rejections[1])),
-            write_gatt_char=AsyncMock(),
-            disconnect=AsyncMock(),
-        )
-        client = nespresso.NespressoClient(auth_code="0123456789abcdef", mac=address)
+        error_code = nespresso.BleakGATTProtocolErrorCode.READ_NOT_PERMITTED
 
-        with (
-            patch.object(nespresso, "establish_connection", AsyncMock(return_value=connection)),
-            patch.object(nespresso.asyncio, "sleep", AsyncMock()),
-            self.assertRaises(nespresso.NespressoAuthenticationError),
+        for error_source, read_rejections in (
+            (
+                "att",
+                tuple(nespresso.BleakGATTProtocolError(error_code) for _ in range(2)),
+            ),
+            ("esphome", tuple(esphome_proxy_error(error_code) for _ in range(2))),
         ):
-            await client.connect(device)
+            with self.subTest(error_source=error_source):
+                connection = SimpleNamespace(
+                    address=address,
+                    is_connected=True,
+                    pair=AsyncMock(),
+                    read_gatt_char=AsyncMock(
+                        side_effect=(read_rejections[0], b"\x02", read_rejections[1])
+                    ),
+                    write_gatt_char=AsyncMock(),
+                    disconnect=AsyncMock(),
+                )
+                client = nespresso.NespressoClient(auth_code="0123456789abcdef", mac=address)
 
-        self.assertEqual(connection.write_gatt_char.await_count, 2)
-        connection.pair.assert_not_awaited()
-        connection.disconnect.assert_awaited_once_with()
+                with (
+                    patch.object(
+                        nespresso, "establish_connection", AsyncMock(return_value=connection)
+                    ),
+                    patch.object(nespresso.asyncio, "sleep", AsyncMock()),
+                    self.assertRaises(nespresso.NespressoAuthenticationError),
+                ):
+                    await client.connect(device)
+
+                self.assertEqual(connection.write_gatt_char.await_count, 2)
+                connection.pair.assert_not_awaited()
+                connection.disconnect.assert_awaited_once_with()
 
     async def test_late_final_state_prevents_onboarding_write(self) -> None:
         address = "AA:BB:CC:DD:EE:FF"
