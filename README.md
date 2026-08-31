@@ -87,6 +87,10 @@ The authentication token may not have been installed correctly. Remove the integ
 
 ## Credits
 
-This project builds on protocol research by [tikismoke](https://github.com/tikismoke/home-assistant-nespressoble) and other contributors. Additional reverse-engineering notes are available in [`reverse_engineering/README.md`](reverse_engineering/README.md).
+This project is derived from the GPL-3.0-licensed [Nespresso BLE integration by tikismoke](https://github.com/tikismoke/home-assistant-nespressoble) and the successor implementation by [bulldog5046](https://github.com/bulldog5046/ha_nespresso_integration). It has been substantially modified since the original fork, including a major rewrite in August 2026. Additional reverse-engineering notes are available in [`reverse_engineering/README.md`](reverse_engineering/README.md).
 
 This integration is an independent community project and is not affiliated with or endorsed by Nespresso.
+
+## License
+
+This project is distributed under the [GNU General Public License version 3](LICENSE).
