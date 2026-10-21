@@ -1,0 +1,209 @@
+{
+  "config": {
+    "abort": {
+      "already_configured": "Questa macchina è già configurata.",
+      "already_in_progress": "La configurazione di questa macchina è già in corso.",
+      "no_devices_found": "Nessuna macchina Nespresso supportata trovata.",
+      "not_supported": "Questa macchina Nespresso non è supportata.",
+      "reauth_successful": "Il nuovo token di autenticazione è stato salvato correttamente."
+    },
+    "error": {
+      "cannot_connect": "Connessione alla macchina non riuscita.",
+      "cannot_pair": "Associazione alla macchina non riuscita.",
+      "invalid_auth": "Il token di autenticazione non è valido.",
+      "invalid_token": "Il token di autenticazione deve contenere esattamente 16 caratteri esadecimali.",
+      "unknown": "Si è verificato un errore imprevisto."
+    },
+    "step": {
+      "bluetooth_confirm": {
+        "data": {
+          "token": "Token di autenticazione"
+        },
+        "data_description": {
+          "token": "Token esistente, facoltativo. Lascia vuoto per associare la macchina."
+        },
+        "description": "Vuoi aggiungere a Home Assistant la macchina Nespresso rilevata {name}?",
+        "title": "Conferma la macchina Nespresso"
+      },
+      "reauth_confirm": {
+        "data": {
+          "token": "Token di autenticazione"
+        },
+        "data_description": {
+          "token": "Inserisci un token di autenticazione valido per questa macchina."
+        },
+        "description": "Il token di autenticazione di {name} non è più valido. Inserisci un nuovo token per ripristinare la comunicazione.",
+        "title": "Autentica nuovamente {name}"
+      },
+      "user": {
+        "data": {
+          "address": "Indirizzo Bluetooth",
+          "token": "Token di autenticazione"
+        },
+        "data_description": {
+          "address": "Seleziona la macchina Nespresso rilevata da configurare.",
+          "token": "Token esistente, facoltativo. Lascia vuoto per associare la macchina."
+        },
+        "description": "Seleziona una macchina Nespresso rilevata. Quando possibile riutilizza un token di autenticazione esistente; altrimenti assicurati che la macchina sia pronta per l'associazione.",
+        "title": "Configura Nespresso"
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "caps_number": {
+        "name": "Capsule rimanenti"
+      },
+      "capsule_mechanism_jammed": {
+        "name": "Meccanismo delle capsule",
+        "state": {
+          "jammed": "Inceppato",
+          "not_jammed": "Non inceppato"
+        }
+      },
+      "descaling_counter": {
+        "name": "Contatore di decalcificazione"
+      },
+      "descaling_needed": {
+        "name": "Necessità di decalcificazione",
+        "state": {
+          "needed": "Necessaria",
+          "not_needed": "Non necessaria"
+        }
+      },
+      "slider": {
+        "name": "Leva",
+        "state": {
+          "closed": "Chiusa",
+          "open": "Aperta"
+        }
+      },
+      "state": {
+        "name": "Stato della macchina",
+        "state": {
+          "advanced_selection_menu": "Menu di selezione avanzata",
+          "ble_settings": "Impostazioni Bluetooth",
+          "brewing": "Erogazione in corso",
+          "descaling": "Decalcificazione in corso",
+          "descaling_ready": "Pronta per la decalcificazione",
+          "diagnostic_mode": "Modalità diagnostica",
+          "error": "Errore",
+          "factory_reset": "Ripristino delle impostazioni di fabbrica",
+          "heat_up": "Riscaldamento",
+          "over_heat": "Surriscaldata",
+          "power_save": "Risparmio energetico",
+          "ready": "Pronta",
+          "reset": "Ripristino",
+          "stand_by_delay_settings": "Impostazioni del ritardo di standby",
+          "steam_out": "Erogazione del vapore",
+          "unknown": "Sconosciuto",
+          "water_hardness_settings": "Impostazioni della durezza dell'acqua"
+        }
+      },
+      "water_fresh": {
+        "name": "Freschezza dell'acqua",
+        "state": {
+          "fresh": "Fresca",
+          "not_fresh": "Non fresca"
+        }
+      },
+      "water_hardness": {
+        "name": "Durezza dell'acqua",
+        "state": {
+          "level_0": "Livello 0",
+          "level_1": "Livello 1",
+          "level_2": "Livello 2",
+          "level_3": "Livello 3",
+          "level_4": "Livello 4"
+        }
+      },
+      "water_is_empty": {
+        "name": "Serbatoio dell'acqua",
+        "state": {
+          "empty": "Vuoto",
+          "not_empty": "Non vuoto"
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "action_failed": {
+      "message": "L'azione Nespresso non è riuscita: {error}"
+    },
+    "device_entry_not_loaded": {
+      "message": "La voce di configurazione Nespresso del dispositivo `{device_id}` non è caricata."
+    },
+    "device_not_belonging": {
+      "message": "Il dispositivo `{device_id}` non appartiene a una voce di configurazione Nespresso."
+    },
+    "device_required": {
+      "message": "Seleziona una macchina Nespresso; non è stato possibile determinare un'unica macchina caricata."
+    },
+    "invalid_device_id": {
+      "message": "L'ID dispositivo `{device_id}` non è valido."
+    },
+    "missing_custom_volume": {
+      "message": "Per una ricetta personalizzata è necessario indicare sia il volume del caffè sia quello dell'acqua."
+    }
+  },
+  "selector": {
+    "brew_temperature": {
+      "options": {
+        "high": "Alta",
+        "low": "Bassa",
+        "medium": "Media"
+      }
+    },
+    "brew_type": {
+      "options": {
+        "americano": "Americano",
+        "espresso": "Espresso",
+        "hot_water": "Acqua calda",
+        "lungo": "Lungo",
+        "ristretto": "Ristretto"
+      }
+    }
+  },
+  "services": {
+    "caps": {
+      "description": "Imposta il contatore delle capsule su una macchina Nespresso.",
+      "fields": {
+        "caps": {
+          "description": "Nuovo numero di capsule rimanenti.",
+          "name": "Numero di capsule"
+        },
+        "device_id": {
+          "description": "Macchina da aggiornare. Facoltativo quando è configurata una sola macchina Nespresso; obbligatorio quando ne sono configurate più di una.",
+          "name": "Macchina"
+        }
+      },
+      "name": "Imposta il numero di capsule"
+    },
+    "coffee": {
+      "description": "Avvia una bevanda predefinita o un'erogazione con volumi personalizzati su una macchina Nespresso.",
+      "fields": {
+        "brew_temp": {
+          "description": "Temperatura utilizzata per l'erogazione.",
+          "name": "Temperatura di erogazione"
+        },
+        "brew_type": {
+          "description": "Bevanda predefinita da erogare. Viene ignorata quando vengono indicati entrambi i volumi personalizzati.",
+          "name": "Bevanda"
+        },
+        "coffee_ml": {
+          "description": "Volume del caffè in millilitri. Indicalo insieme al volume dell'acqua per usare una ricetta personalizzata.",
+          "name": "Volume del caffè"
+        },
+        "device_id": {
+          "description": "Macchina da controllare. Facoltativo quando è configurata una sola macchina Nespresso; obbligatorio quando ne sono configurate più di una.",
+          "name": "Macchina"
+        },
+        "water_ml": {
+          "description": "Volume dell'acqua in millilitri. Indicalo insieme al volume del caffè per usare una ricetta personalizzata.",
+          "name": "Volume dell'acqua"
+        }
+      },
+      "name": "Eroga caffè"
+    }
+  }
+}
